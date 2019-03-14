@@ -33,7 +33,7 @@ function new-psScreenRecord
             Is Mandatory
  
             
-    .PARAMETER framerate
+    .PARAMETER fps
 		Framerate used to calculate both how often to take a screenshot
         And what to use to process the ffmpeg call
  
@@ -45,9 +45,18 @@ function new-psScreenRecord
 		Path to ffMpeg
         Suggest you modify this to be where yours is by default
  
+    .PARAMETER confirm
+        Skip asking if you want to continue
+
+    .PARAMETER leaveImages
+        Skip deleting the temporary images after screen-capture
+
+    .PARAMETER tempPath
+        Where to store the images before compiling them into a video
+    
  
 	.EXAMPLE
-		new-psVideoCapture -outFolder 'C:\temp\testVid' -Verbose 
+		new-psScreenRecord -outFolder 'C:\temp\testVid' -Verbose 
  
 	DESCRIPTION
 	------------
@@ -73,12 +82,15 @@ function new-psScreenRecord
             14-03-2019 - AA
                 - Moved to bartender module
              
-             14-03-2019 - AA
+            14-03-2019 - AA
                 - Changed the ffmpegPath to use the allUsersProfile path
                 - Throw better errors
-                - Added a write-host so users were not left wondering what was going on with the capture process
+                - Added a couple write-hosts so users were not left wondering what was going on with the capture process
                     - Normally I don't condone write-host but it seemed to make sense in this case
-                
+                -Changed var name to ffmpegArg
+                - Moved images to temp folder rather than output folder
+                - Fixed confirm switch so it actually works
+                - Fixed the help
  
     .COMPONENT
         psScreenCapture
@@ -96,8 +108,12 @@ function new-psScreenRecord
         [string]$videoName = 'out.mp4',
         [Parameter(Mandatory=$false,Position=3)]
         [string]$ffMPegPath = $(get-childitem -path "$($env:ALLUSERSPROFILE)\ffmpeg" -filter 'ffmpeg.exe' -Recurse|sort-object -Property LastWriteTime -Descending|select-object -First 1).fullname,
-        [switch]$Confirm,
-        [switch]$leaveImages
+        [Parameter(Mandatory=$false,Position=5)]
+        [switch]$confirm,
+        [Parameter(Mandatory=$false,Position=6)]
+        [switch]$leaveImages,
+        [Parameter(Mandatory=$false,Position=4)]
+        [string]$tempPath = "$($env:temp)\ffmpeg"
     )
     begin{
  
@@ -145,6 +161,17 @@ function new-psScreenRecord
         {
             throw 'FFMPEG not found - either provide the path variable or run the install-ffmmpeg command'
         }
+
+        if(!$(test-path $tempPath))
+        {
+            write-verbose 'Creating ffmpeg temp directory'
+            try{
+                $outputDir = new-item -ItemType Directory -Path $tempPath -Force -ErrorAction Stop
+                write-verbose 'Directory Created'
+            }catch{
+                throw 'Unable to create ffmpeg temp directory'
+            }
+        }
         
  
         Write-Verbose 'Getting THIS POWERSHELL Session handle number so we know what to ignore'
@@ -156,18 +183,18 @@ function new-psScreenRecord
         {
             Write-Verbose 'Folder exists, will need to remove '
             Write-Warning 'Output folder already exists. This process will recreate it'
-            if(!$continue)
+            if(!$confirm)
             {
                 if($($Host.UI.PromptForChoice('Continue','Are you sure you wish to continue', @('No','Yes'), 1)) -eq 1)
                 {
-                    $confirm = $true
+                    write-host 'Continuing with screen capture'
                 }else{
                     return -1
                 }
  
             }
             Write-Verbose 'Removing existing jpegs in folder and video file if it exists'
-            remove-item "$outFolder\*.jpg" -Force
+            remove-item "$tempPath\*.jpg" -Force
             remove-item $outFolder\$videoName -Force -ErrorAction SilentlyContinue #SilentlyCont in case the file doesn't exist
  
         }else{
@@ -190,8 +217,15 @@ function new-psScreenRecord
         $verEnd = get-EvenNumber $end.y
         $boxSize = "box size: Xa: $horStart, Ya: $verStart, Xb: $horEnd, Yb: $verEnd, $($horEnd - $horStart) pixels wide, $($verEnd - $verStart) pixles tall"
         Write-Verbose $boxSize
-        if($($Host.UI.PromptForChoice('Continue',"Capture will start 2 seconds after this window looses focus. `n Press CTRL+C to force stop", @('No','Yes'), 1)) -eq 1)
+        if(!$confirm)
         {
+            $startCapture = $($Host.UI.PromptForChoice('Continue',"Capture will start 2 seconds after this window looses focus. `n Press CTRL+C to force stop", @('No','Yes'), 1))
+        }else{
+            $startCapture = $true
+        }
+        if($startCapture -eq $true -or $startCapture -eq 1)
+        {
+            write-host 'Starting screen capture'
             #Start up the capture process
             $num = 1 #Iteration number for screenshot naming
             $capture = $false #Switch to say when to stop capture
@@ -204,6 +238,7 @@ function new-psScreenRecord
                     Start-Sleep -Milliseconds 60
                 }else{
                     write-verbose 'Powershell lost focus'
+                    write-host 'Focus Lost - Starting screen capture'
                     Start-Sleep -Seconds 2
                     $capture=$true
                     $stopwatch = [System.Diagnostics.stopwatch]::StartNew()
@@ -219,7 +254,7 @@ function new-psScreenRecord
                 }else{
                     write-verbose 'Powershell does not have focus, so capture a screenshot'
                     $x = "{0:D5}" -f $num
-                    $path = "$outFolder\$x.jpg"
+                    $path = "$tempPath\$x.jpg"
                     Out-screenshot -horStart $horStart -verStart $verStart -horEnd $horEnd -verEnd $verEnd -path $path -captureCursor
                     $num++
                     Start-Sleep -milliseconds $msWait
@@ -233,7 +268,7 @@ function new-psScreenRecord
  
     }End{
         $stopwatch.stop()
-        $numberOfImages = $(get-childitem $outFolder -Filter '*.jpg').count
+        $numberOfImages = $(get-childitem $tempPath -Filter '*.jpg').count
         #Gasp ... a write host appeared
         #Since we aren't returning any objects this seems like a good option
         Write-Host 'Capture complete, compiling video'
@@ -243,12 +278,12 @@ function new-psScreenRecord
         Write-Verbose "Total Number of Images: $numberOfImages"
         Write-Verbose "ActualFrameRate: $actualFrameRate"
         Write-Verbose 'Creating video using ffmpeg'
-        $args = "-framerate $actualFrameRate -i $outFolder\%05d.jpg -c:v libx264 -vf fps=$actualFrameRate -pix_fmt yuv420p $outFolder\$videoName -y"
-        Start-Process -FilePath $ffMPegPath -ArgumentList $args -Wait
+        $ffmpegArg = "-framerate $actualFrameRate -i $tempPath\%05d.jpg -c:v libx264 -vf fps=$actualFrameRate -pix_fmt yuv420p $outFolder\$videoName -y"
+        Start-Process -FilePath $ffMPegPath -ArgumentList $ffmpegArg -Wait
         if(!$leaveImages)
         {
             Write-Verbose 'Cleaning up jpegs'
-            remove-item "$outFolder\*.jpg" -Force
+            remove-item "$tempPath\*.jpg" -Force
         }
  
     }
