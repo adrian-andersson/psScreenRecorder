@@ -210,11 +210,13 @@ function new-psScreenRecord
         $start = [System.Windows.Forms.Cursor]::Position
         Read-Host 'VIDEO RECORD, put mouse cursor in bottom right corner of capture area and press any key'
         $end = [System.Windows.Forms.Cursor]::Position
+
+        $scale = get-screenScaling
  
-        $horStart = get-EvenNumber $start.x
-        $verStart = get-EvenNumber $start.y
-        $horEnd = get-EvenNumber $end.x
-        $verEnd = get-EvenNumber $end.y
+        $horStart = get-EvenNumber $($($start.x * $scale) /100)
+        $verStart = get-EvenNumber $($($start.y * $scale) / 100)
+        $horEnd = get-EvenNumber $($($end.x * $scale) / 100)
+        $verEnd = get-EvenNumber $($($end.y * $scale) / 100)
         $boxSize = "box size: Xa: $horStart, Ya: $verStart, Xb: $horEnd, Yb: $verEnd, $($horEnd - $horStart) pixels wide, $($verEnd - $verStart) pixles tall"
         Write-Verbose $boxSize
         if(!$confirm)
