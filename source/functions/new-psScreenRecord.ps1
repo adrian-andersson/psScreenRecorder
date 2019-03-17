@@ -71,18 +71,18 @@ function new-psScreenRecord
     
     .NOTES
 		Author: Adrian Andersson
-		Last-Edit-Date: 13-09-2017
+		
 			
 			
         Changelog
         
-            13-09-2017 - AA
+            2017-09-13  - AA
                 - New script, cleaned-up from an old one I had saved
 
-            14-03-2019 - AA
+            2019-03-14 - AA
                 - Moved to bartender module
              
-            14-03-2019 - AA
+            2019-03-14 - AA
                 - Changed the ffmpegPath to use the allUsersProfile path
                 - Throw better errors
                 - Added a couple write-hosts so users were not left wondering what was going on with the capture process
@@ -91,6 +91,9 @@ function new-psScreenRecord
                 - Moved images to temp folder rather than output folder
                 - Fixed confirm switch so it actually works
                 - Fixed the help
+
+            2019-03-17 - AA
+                - Second attempt at fixing screen scaling bug
  
     .COMPONENT
         psScreenCapture
@@ -213,10 +216,10 @@ function new-psScreenRecord
 
         $scale = get-screenScaling
  
-        $horStart = get-EvenNumber $($($start.x * $scale) /100)
-        $verStart = get-EvenNumber $($($start.y * $scale) / 100)
-        $horEnd = get-EvenNumber $($($end.x * $scale) / 100)
-        $verEnd = get-EvenNumber $($($end.y * $scale) / 100)
+        $horStart = get-EvenNumber $($($start.x * $scale))
+        $verStart = get-EvenNumber $($($start.y * $scale))
+        $horEnd = get-EvenNumber $($($end.x * $scale))
+        $verEnd = get-EvenNumber $($($end.y * $scale))
         $boxSize = "box size: Xa: $horStart, Ya: $verStart, Xb: $horEnd, Yb: $verEnd, $($horEnd - $horStart) pixels wide, $($verEnd - $verStart) pixles tall"
         Write-Verbose $boxSize
         if(!$confirm)

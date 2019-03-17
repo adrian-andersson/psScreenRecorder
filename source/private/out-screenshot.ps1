@@ -15,13 +15,16 @@ function Out-screenshot
     if($captureCursor)
     {
         write-verbose "CaptureCursor is true"
+        $scale = get-screenScaling
         $mousePos = [System.Windows.Forms.Cursor]::Position
-        if(($mousePos.x -gt $horStart)-and($mousepos.x -lt $horEnd)-and($mousePos.y -gt $verStart) -and ($mousePos.y -lt $verEnd))
+        $mouseX = $mousePos.x * $scale
+        $mouseY = $mousePos.y * $scale
+        if(($mouseX -gt $horStart)-and($mouseX -lt $horEnd)-and($mouseY -gt $verStart) -and ($mouseY -lt $verEnd))
         {
             write-verbose "Mouse is in the box"
             #Get the position in the box
-            $x = $mousePos.x - $horStart
-            $y = $mousePos.y - $verStart
+            $x = $mouseX - $horStart
+            $y = $mouseY - $verStart
             write-verbose "X: $x, Y: $y"
             #Add a 4 pixel red-dot
             $pen = [drawing.pen]::new([drawing.color]::Red)

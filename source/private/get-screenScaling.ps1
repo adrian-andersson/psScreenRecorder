@@ -20,6 +20,10 @@ function get-screenScaling
                     - Initial Script
                     - TypeDefinitiion from here:
                         - https://hinchley.net/articles/get-the-scaling-rate-of-a-display-using-powershell/
+
+                2019-03-17 - AA
+                    - Fixing bugs
+                        - Thanks to lazytao for raising this
                     
         .COMPONENT
             What cmdlet does this script live in
@@ -61,18 +65,35 @@ function get-screenScaling
             '}'
         )
 
-        if(![dpi])
-        {
-            Add-Type $($typeDefinition -join "`n") -ReferencedAssemblies 'System.Drawing.dll'
-        }
+        
 
         
         
     }
     
     process{
-        $scale = [math]::round([dpi]::scaling(), 2) * 100
-        return $scale
+
+        
+        try{
+            write-verbose 'Getting DPI 1st Attempt'
+            $dpi = [dpi]::scaling()
+
+        }catch{
+            write-verbose 'Typedef missing, adding'
+            Add-Type $($typeDefinition -join "`n") -ReferencedAssemblies 'System.Drawing.dll'
+            write-verbose 'Getting DPI 2nd Attempt'
+            $dpi = [dpi]::scaling()
+        }
+
+        if(!$dpi -or ($dpi -le 0))
+        {
+            throw 'unable to get screen DPI'
+        }else{
+            write-verbose 'Got screen dpi'
+
+            $dpi
+        }
+        
         
     }
     
