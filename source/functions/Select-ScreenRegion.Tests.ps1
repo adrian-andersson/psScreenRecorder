@@ -93,8 +93,10 @@ Describe 'Invoke-SlopSelection' -Skip:$IsWindows {
         $env:PSSR_SLOP_CANCEL = $null
     }
 
-    It 'Returns x, y, width and height' {
-        Invoke-SlopSelection | Should -Be @(12,34,640,480)
+    It 'Returns x, y, width and height, as one array' {
+        #The function returns the array as a single object, so callers get it intact; assigning unwraps it
+        $selection = Invoke-SlopSelection
+        $selection | Should -Be @(12,34,640,480)
     }
 
     It 'Returns nothing when cancelled' {
