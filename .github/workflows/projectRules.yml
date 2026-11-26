@@ -1,0 +1,103 @@
+# =============================================================================
+# OPTIONAL WORKFLOW — rename to enable
+# =============================================================================
+#
+# The default PSScriptAnalyzer workflow checks your code follows expected
+# PowerShell idioms. This one checks it follows your own, and posts its own
+# pull request comment. It never repeats the default rules, and findings are
+# advisory, so they never block a pull request.
+#
+# TO ENABLE:
+#   1. Rename this file to projectRules.yml (remove the .example extension)
+#   2. Add rules to a PSScriptAnalyzer folder in the root of your repository.
+#      The files in that folder decide what runs. With no files, this workflow
+#      exits early and posts no comment.
+#
+#      PSScriptAnalyzer/*.psd1          Settings files naming the rules to run
+#      PSScriptAnalyzer/rules/<Name>/   Custom rule modules
+#
+# EXAMPLE - check for Constrained Language Mode compatibility:
+#   Save this as PSScriptAnalyzer/clm.psd1. It needs PSScriptAnalyzer 1.25.0+
+#
+#   @{
+#       IncludeRules = @('PSUseConstrainedLanguageMode')
+#       Rules = @{
+#           PSUseConstrainedLanguageMode = @{
+#               Enable = $true
+#               IgnoreSignatures = $true
+#           }
+#       }
+#   }
+#
+#   This is a static check, so a clean result does not prove your module works
+#   under Constrained Language Mode. Note that a class anywhere in your module
+#   stops all of it importing, even if nothing uses that class.
+#
+# SECURITY:
+#   Custom rules are PowerShell code that runs on every pull request. They run
+#   in a job with read-only access, and the comment is posted by a second job
+#   that never runs your code. Consider adding PSScriptAnalyzer/ to CODEOWNERS.
+# =============================================================================
+
+name: Execute Project Rules
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+
+jobs:
+  projectRules:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read #Custom rules run in this job, so it gets nothing else
+    outputs:
+      report: ${{ steps.project_rules.outputs.report }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run project rules
+        shell: pwsh
+        id: project_rules
+        run: |
+          $result = & ./scripts/Invoke-MFProjectRules.ps1 -InstallPSScriptAnalyzer
+          if($result.HasRuleSets)
+          {
+            #Base64 so nothing in a rule message can break out of the job output
+            "report=$([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($result.Report)))" >> $env:GITHUB_OUTPUT
+          }
+
+  projectRulesComment:
+    needs: projectRules
+    if: github.event_name == 'pull_request' && needs.projectRules.outputs.report != ''
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      pull-requests: write #Needed for adding comment. This job must never checkout or run repository code
+
+    steps:
+      - name: Decode report
+        shell: pwsh
+        env:
+          REPORT: ${{ needs.projectRules.outputs.report }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:REPORT))|out-file -FilePath projectRules.md -encoding UTF8
+          #When, and from which push, as GitHub only says an edited comment changed
+          $runUrl = "$($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/actions/runs/$($env:GITHUB_RUN_ID)"
+          $commit = if($env:HEAD_SHA -match '^[0-9a-f]{7,40}$'){ $env:HEAD_SHA.Substring(0,7) }else{ 'unknown' }
+          $attempt = if([int]$env:GITHUB_RUN_ATTEMPT -gt 1){ ", attempt $($env:GITHUB_RUN_ATTEMPT)" }
+          "`n_Updated $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm')) UTC for commit ``$commit`` · [run $($env:GITHUB_RUN_NUMBER)$attempt]($runUrl)_"|Add-Content -Path projectRules.md -Encoding UTF8
+
+      - name: Add Project Rules PR Comment
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+        with:
+          path: projectRules.md
+          header: projectRules

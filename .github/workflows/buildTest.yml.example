@@ -1,0 +1,261 @@
+# =============================================================================
+# OPTIONAL WORKFLOW — rename to enable
+# Build Test: check the PUBLISHED module, after Build and Release
+# =============================================================================
+#
+# TO ENABLE: rename this file to buildTest.yml (remove the .example extension).
+# The tests it runs are already in the buildTest folder.
+#
+# Unit tests load your functions from source/, so they can't see what the build
+# changes: the manifest's export lists, the compiled .psm1, and how the package
+# installs. After "Build and Release" succeeds, this installs the version it just
+# published from this repository's GitHub Packages feed, and runs every
+# *.Tests.ps1 in the buildTest folder against it.
+#
+# buildTest/Module.Build.Tests.ps1 checks every public function and alias in
+# source/functions is exported, and nothing else. Add your own black-box tests
+# beside it.
+#
+# No secrets are needed: the module is in this repository's own package feed,
+# so the default GITHUB_TOKEN can read it. GitHub Packages lowercases the package
+# id, which breaks Import-Module by name on case-sensitive Linux, so the install
+# folder is renamed to match the manifest (Resolve-MFModuleCase, inlined below so
+# this workflow does not need ModuleForge).
+#
+# If your Build and Release workflow has a different name, change the
+# workflows: entry below to match it.
+# =============================================================================
+
+name: Build Test
+
+on:
+  workflow_run:
+    workflows: ["Build and Release"]
+    types:
+      - completed
+  workflow_dispatch:
+
+jobs:
+  buildTest:
+    # Auto-run only when the upstream build succeeded and published something; always run on manual dispatch.
+    # A dry run of Build and Release succeeds without publishing, and says DRY RUN in its run name
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && !contains(github.event.workflow_run.display_title, 'DRY RUN')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read   # checkout
+      packages: read   # read this repo's GitHub Packages NuGet feed
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies #Pester from BuildDependencies.psd1, as the other workflows use
+        shell: pwsh
+        run: |
+          $VerbosePreference = 'Continue'
+          $installed = ./scripts/Install-MFBuildDependencies.ps1 -Name Pester
+          $installed | Format-Table
+          #Each step is a new session, so the test step imports this exact version
+          "PESTER_VERSION=$($installed.ModuleVersion)" >> $env:GITHUB_ENV
+
+      - name: Register GitHub Packages repository
+        shell: pwsh
+        if: success()
+        run: |
+          $VerbosePreference = 'Continue'
+          $repoUrl = "https://nuget.pkg.github.com/$($env:GITHUB_REPOSITORY_OWNER)/index.json"
+          Write-Verbose "GitHub Packages feed: $repoUrl"
+          Register-PSResourceRepository -Name 'myGHPackages' -Uri $repoUrl -Trusted
+          Get-PSResourceRepository | Select-Object Name,Uri,Trusted | Format-List
+
+      - name: Install published module and run build tests
+        shell: pwsh
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $VerbosePreference = 'Continue'
+
+          # --- Inline module-case fix (no ModuleForge dependency) ------------------
+          # Verbatim copy of Resolve-MFModuleCase from the ModuleForge repo's
+          # psgalleryRelease_NoModuleForge.yml. GitHub Packages lowercases the package
+          # id, so the installed folder casing won't match the manifest; this renames
+          # the folder to the manifest base name so Import-Module by name works on Linux.
+          function Resolve-MFModuleCase
+          {
+              [CmdletBinding()]
+              [OutputType([PSCustomObject])]
+              PARAM(
+                  [Parameter(Mandatory,ValueFromPipeline,ValueFromPipelineByPropertyName)]
+                  [string]$ModuleName,
+                  [Parameter()]
+                  [string[]]$ModuleFolder
+              )
+              begin{
+                  $folderVersionSelect = @(
+                      'FullName'
+                      'Name'
+                      @{
+                          Name = 'Semver'
+                          Expression = {
+                              try {
+                                  [semver]"$($_.Name)"
+                              }catch {
+                                  $null
+                              }
+                          }
+                      }
+                  )
+              }
+              process{
+                  $moduleCandidates = [System.Collections.Generic.List[string]]::new()
+                  if($ModuleFolder)
+                  {
+                      write-verbose "Checking defined folder: $ModuleFolder"
+                      $foundItems = Get-ChildItem -Path $ModuleFolder -Recurse -Filter $ModuleName -Directory
+                      $foundItems.foreach{
+                          $moduleCandidates.Add($_.FullName)
+                      }
+                  }else{
+                      $locations = $env:PSModulePath -split [IO.Path]::PathSeparator
+                      $locations.Foreach{
+                          try{
+                              $foundItems = Get-ChildItem -Path $_ -Recurse -Filter $ModuleName -Directory -ErrorAction Ignore
+                              $foundItems.foreach{
+                                  $moduleCandidates.Add($_.FullName)
+                              }
+                          }catch{
+                              Write-Warning "Skipping path $_ due to read or permission errors"
+                          }
+                      }
+                  }
+                  $moduleCandidates = $moduleCandidates.ToArray()
+                  Write-Verbose "Found $($moduleCandidates.count) locations."
+                  if(!$moduleCandidates -or $moduleCandidates.Count -lt 1)
+                  {
+                      Write-Warning "No module folders found for module: $ModuleName"
+                  }
+                  $moduleCandidates.forEach{
+                      $moduleFolderBasename = $(Get-Item $_).BaseName
+                      Remove-Variable latestVersion,modManifest,BaseFolderRefresh -ErrorAction Ignore
+                      Write-Verbose "Checking folder $_ for latest module version"
+                      $latestVersion = $(Get-ChildItem -path $_|Select-Object $folderVersionSelect).where{$_.Semver}|Sort-Object -Property Semver -Descending|Select-Object -First 1
+                      if($latestVersion)
+                      {
+                          Write-Verbose "Found latest version of: $($latestVersion.Name)"
+                          $modManifest = $(Get-ChildItem -Path $latestVersion.FullName).where{$_.name -eq  "$ModuleName.psd1"}|Select-Object -first 1
+                          Write-Verbose "Found Manifest name with: $($modManifest.basename)"
+                          If($(Get-Item $_).BaseName -cne $modManifest.basename)
+                          {
+                              Write-Warning "Case mismatch between module folder $moduleFolderBasename and $($modManifest.basename)"
+                              write-verbose "Attempt to rename folder to manifest basename to correct for casing"
+                              try{
+                                  Rename-Item -path $_ -NewName $modManifest.BaseName -Force -Erroraction Stop
+                                  Start-Sleep -Seconds 4
+                                  Write-Verbose 'Folder Rename attempted'
+                              }catch{
+                                  write-warning 'Error renaming folder'
+                              }
+                              $Parent = Split-Path $_ -Parent
+                              $NewFullPath = Join-Path $Parent $modManifest.BaseName
+                              try{
+                                  $BaseFolderRefresh = Get-Item $NewFullPath
+                              }catch{
+                                  $BaseFolderRefresh = Get-Item $_
+                              }
+                              [PSCustomObject]@{
+                                  FolderFullName = $BaseFolderRefresh.FullName
+                                  FolderBaseName = $BaseFolderRefresh.BaseName
+                                  ManifestName = $modManifest.BaseName
+                                  RenameAttempt = $true
+                                  ManifestAndFolderMatch = if($BaseFolderRefresh.BaseName -ceq $modManifest.BaseName){$true}else{$false}
+                              }
+                          }else{
+                              Write-Verbose "Case match between module folder $moduleFolderBasename and $($modManifest.basename) - All Ok"
+                              [PSCustomObject]@{
+                                  FolderFullName = $_
+                                  FolderBaseName = $moduleFolderBasename
+                                  ManifestName = $modManifest.BaseName
+                                  RenameAttempt = $false
+                                  ManifestAndFolderMatch = if($moduleFolderBasename -ceq $modManifest.BaseName){$true}else{$false}
+                              }
+                          }
+                          Write-Verbose "Finished checking folder $_"
+                      }else{
+                          Write-Warning "No module versions found for $modulename in folder $_"
+                      }
+                  }
+              }
+          }
+          # -------------------------------------------------------------------------
+
+          $credential = New-Object System.Management.Automation.PSCredential(
+            'githubActions',
+            (ConvertTo-SecureString $env:GH_TOKEN -AsPlainText -Force)
+          )
+
+          if(-not (Test-Path ./moduleForgeConfig.xml)){
+            throw 'Unable to read moduleForgeConfig.xml'
+          }
+          $moduleName = (Import-Clixml ./moduleForgeConfig.xml).moduleName
+          Write-Verbose "Module under test: $moduleName"
+
+          # Get the latest fresh-built version straight from the GitHub Packages feed
+          # (including prereleases). GitHub Packages can lag a few seconds behind the
+          # publish step, so retry the lookup.
+          $selectedRelease = $null
+          for($attempt = 1; $attempt -le 6 -and -not $selectedRelease; $attempt++){
+            Write-Verbose "Find attempt $attempt for latest $moduleName"
+            $selectedRelease = Find-PSResource -Repository myGHPackages -Name $moduleName `
+              -Credential $credential -Prerelease -ErrorAction SilentlyContinue | Select-Object -First 1
+            if(-not $selectedRelease){ Start-Sleep -Seconds 10 }
+          }
+          if(-not $selectedRelease){ throw "No published $moduleName found on GitHub Packages" }
+          $moduleVersion = if($selectedRelease.Prerelease){ "$($selectedRelease.Version)-$($selectedRelease.Prerelease)" } else { "$($selectedRelease.Version)" }
+          Write-Verbose "Latest published ${moduleName}: $moduleVersion"
+          $selectedRelease | Install-PSResource -Credential $credential
+
+          # The "name fix" — correct module folder casing for case-sensitive Linux imports
+          Write-Verbose 'Resolving module case'
+          Resolve-MFModuleCase -ModuleName $moduleName
+          $moduleFound = $(Get-Module -ListAvailable).where{ $_.Name -ieq $moduleName } |
+            Sort-Object Version -Descending | Select-Object -First 1
+          if(-not $moduleFound){ throw "Module $moduleName not found after install — case resolution may have failed" }
+          Write-Verbose "Installed at: $($moduleFound.ModuleBase)"
+
+          # --- Provenance --------------------------------------------------------
+          # Dump everything installed (prerelease-aware, unlike Get-Module .Version)
+          Write-Host '--- Installed PSResources ---'
+          Get-InstalledPSResource | Sort-Object Name |
+            Format-Table Name,Version,Prerelease,Repository -AutoSize | Out-String | Write-Host
+
+          # ModuleForge stamps the version it built with into the compiled .psm1 header,
+          # including any prerelease label (e.g. 1.4.0-prev003)
+          $psm1Path = Join-Path $moduleFound.ModuleBase "$moduleName.psm1"
+          $mfBuiltVersion = 'unknown'
+          if(Test-Path $psm1Path){
+            $headerLine = Get-Content $psm1Path -TotalCount 6 |
+              Select-String -Pattern 'ModuleForge Version:' | Select-Object -First 1
+            if($headerLine){ $mfBuiltVersion = ($headerLine.ToString() -replace '.*ModuleForge Version:\s*','').Trim() }
+          }
+
+          # Run the black-box build test suite against the installed module
+          Import-Module Pester -RequiredVersion $env:PESTER_VERSION
+          $config = New-PesterConfiguration
+          $config.Run.Path        = './buildTest'
+          $config.Run.PassThru    = $true
+          $config.Output.Verbosity = 'Detailed'
+          $result = Invoke-Pester -Configuration $config
+
+          #Result also catches a test file that failed to load, which FailedCount does not count
+          if($result.FailedCount -gt 0 -or $result.Result -ne 'Passed'){
+            throw "buildTest: $($result.FailedCount) test(s) failed against the published module"
+          }
+          Write-Host ''
+          Write-Host '================ buildTest summary ================'
+          Write-Host "✅ Passed: $($result.PassedCount) test(s)"
+          Write-Host "   Module under test : $moduleName $moduleVersion"
+          Write-Host "   Built with        : ModuleForge $mfBuiltVersion"
+          Write-Host '=================================================='
