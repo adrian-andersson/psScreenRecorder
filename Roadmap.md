@@ -29,7 +29,7 @@ The plan was agreed in November 2026. Version 1.0.8, published to PSGallery in J
 ## Command set
 
 | Command | Status | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `Find-FFmpeg` | Phase 1 | Finds ffmpeg and ffprobe: the `-Path` parameter, then `$env:PSSCREENRECORDER_FFMPEG`, then `PATH`. Never installs. Throws with install suggestions for the current OS. The result is cached for the session. `-IncludeCapability` adds the capture sources and the encoders that passed a test encode. |
 | `Get-VideoMetadata` | Phase 1 | ffprobe JSON as a typed object: duration as a `TimeSpan`, width, height, frame rate, codec, bitrate, size. Named so it doesn't clash with the `Get-MediaInfo` module. |
 | `ConvertTo-Gif` | Phase 1 | One-pass palette (`split`, then `palettegen`, then `paletteuse`). Options: `-Fps`, `-Width`, `-Start`, `-End`, `-Dither`, `-Loop`, `-RemoveDuplicateFrames` (`mpdecimate`), `-Force`. Pipeline input by `FullName`. Alias `convert-mp4togif`. Later: `-MaxSize`. |
@@ -86,12 +86,13 @@ Names were checked against PSGallery in November 2026. `ConvertTo-Gif` also exis
   - **AV1:** an option, with good browser support.
   - **VVC:** only through `-VideoCodec`.
 - **Windows the module draws (overlay, border, countdown).** Set `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` so they don't appear in the recording. Check this per backend.
-- **CLM.** Win32 calls live in one private helper. Under CLM, a reduced mode still offers monitor capture, `window_exe`/`window_title` capture and all the media commands. ffmpeg is an external exe, so WDAC governs it, not CLM. The CLM analyzer rules are advisory.
+- **CLM.** The `clm` rule set reports around 45 advisory findings, mostly `[PSCustomObject]@{}`, generic lists, `[Environment]`, `[math]` and the `ToTimeSpan` class. We accept these. Where CLM is enforced, the supported route is signing the module so the WDAC policy trusts it, which runs it in FullLanguage. Win32 calls live in one private helper. Under CLM, a reduced mode still offers monitor capture, `window_exe`/`window_title` capture and all the media commands. ffmpeg is an external exe, so WDAC governs it, not CLM. The CLM analyzer rules are advisory.
 - **Output objects.** Return `FileInfo` with metadata attached, so results pipe into `ConvertTo-Gif`. Default output goes to `[Environment]::GetFolderPath('MyVideos')` with timestamped names. Use `ShouldProcess` and `-Force` instead of overwrite prompts.
 
 ## Crescendo: decided against
 
 Crescendo suits call-it-and-parse-the-result tools. Three things count against it here:
+
 - Our hard parts are a long-running process (start, keep a handle, write `q` to stdin, clean up on exit), building filter graphs and choosing encoders.
 - It generates a module at build time, which clashes with ModuleForge's one-function-per-file build.
 - Its last release was 1.1.0 in September 2023.
@@ -103,11 +104,13 @@ ffmpeg's output is already structured enough: `-progress pipe:1` (key=value), `f
 ## FFmpeg and licensing
 
 psScreenRecorder never downloads, installs or bundles ffmpeg:
+
 - ffmpeg builds are LGPL or GPL depending on how they were configured. Common Windows builds (gyan.dev, BtbN) are GPLv3.
 - Builds often include patent-encumbered encoders (x264, x265).
 - Redistributing them carries obligations this project doesn't take on.
 
 `Find-FFmpeg` finds ffmpeg and, if it's missing, explains how to install it:
+
 - Windows: `winget install Gyan.FFmpeg`
 - macOS: `brew install ffmpeg`
 - Linux: `sudo apt install ffmpeg`, or the distro's equivalent
@@ -141,6 +144,7 @@ CI runs the main Ubuntu job (with coverage and the PR comment) plus a matrix of 
 ## Phases
 
 ### Phase 1: foundation (all testable headless)
+
 - [x] Restore the PSGallery GUID in `moduleForgeConfig.xml`; add tags and an icon URL
 - [x] Delete the Bartender leftovers: `btConfig.xml`, `.bt*` files, `rev/`, `documentation/`, the old build output, `postBuildScripts/`, and the unused `source` folders
 - [x] Tag `v1.0.8` on `c66d3a1` so ModuleForge's next version follows on (**still to push**: `git push origin v1.0.8`)
@@ -154,6 +158,7 @@ CI runs the main Ubuntu job (with coverage and the PR comment) plus a matrix of 
 - [x] Rewrite the readme in UTF-8, with the licensing statement
 
 ### Phase 2: recording core
+
 - [ ] Capture-target model, plus `Get-CaptureTarget` (monitors first)
 - [ ] Argument builders for each backend (gfxcapture, ddagrab, gdigrab, avfoundation, x11grab, synthetic)
 - [ ] Encoder capability detection with test encodes and a cache
@@ -163,6 +168,7 @@ CI runs the main Ubuntu job (with coverage and the PR comment) plus a matrix of 
 - [ ] Focus modes: `-StartOnFocusLoss` / `-StopOnFocusReturn` (Windows first)
 
 ### Phase 3: polish
+
 - [ ] `Select-ScreenRegion` overlay (WinForms/WPF; pwsh 7.6 is STA), excluded from capture
 - [ ] `Invoke-ScreenRecording -ScriptBlock`
 - [ ] `Compress-Video`, `ConvertTo-WebP`, `Edit-Video`, `Export-VideoFrame`, `ConvertTo-Gif -MaxSize`
@@ -173,6 +179,7 @@ CI runs the main Ubuntu job (with coverage and the PR comment) plus a matrix of 
 - [ ] Replace `hw.gif` with a demo made by v2 itself
 
 ### Open items
+
 - [ ] Push the `v1.0.8` tag and `main`; make `main` the default branch and archive `master`
 - [ ] Add a LICENSE file (none exists; `licenseUri` is empty in `moduleForgeConfig.xml`)
 - [ ] Turn on `psgalleryRelease.yml` when v2 is ready (needs the `PSGALLERY` secret)
@@ -184,7 +191,7 @@ CI runs the main Ubuntu job (with coverage and the PR comment) plus a matrix of 
 ## History
 
 | Version | Date | Notes |
-|---|---|---|
+| --- | --- | --- |
 | 1.0.1 | 2019-03 | `new-psScreenRecord` with a PowerShell loop that saves a JPEG per frame and stitches them with ffmpeg. Start and stop follow which window has focus. Based on a 2017 script. |
 | 1.0.2 | 2019-03 | Added `convert-mp4togif` (5 fps, 320 px) and `install-ffMpeg` (zeranoe.com, which shut down in 2020). |
 | 1.0.6 | 2019-03 | First scaling fix: one global scale factor. The cursor wasn't scaled. |
@@ -193,6 +200,7 @@ CI runs the main Ubuntu job (with coverage and the PR comment) plus a matrix of 
 | 1.0.9–1.0.14 | 2022-08 | Never published, recovered from a backup. Native `gdigrab` capture, ffmpeg from `PATH` ("leave the install to user"), focus handle taken with `GetForegroundWindow()`, stop by `SendKeys('q')`. Scaling left in the "too hard basket". Lossless `libx264rgb` capture plus `start-psMp4Optimize` (x265 CRF 28). |
 
 Problems that stopped 1.x from working on modern Windows and pwsh 7:
+
 - `get-screenScaling` compiled against `System.Drawing.dll`. On .NET, `Graphics` moved to `System.Drawing.Common`, so `Add-Type` fails with CS1069.
 - The focus detection described under [Architecture](#architecture).
 - Paths weren't quoted in ffmpeg argument strings.
