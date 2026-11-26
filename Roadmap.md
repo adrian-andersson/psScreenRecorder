@@ -30,7 +30,7 @@ The plan was agreed in November 2026. Version 1.0.8, published to PSGallery in J
 
 | Command | Status | Purpose |
 | --- | --- | --- |
-| `Find-FFmpeg` | Phase 1 | Finds ffmpeg and ffprobe: the `-Path` parameter, then `$env:PSSCREENRECORDER_FFMPEG`, then `PATH`. Never installs. Throws with install suggestions for the current OS. The result is cached for the session. `-IncludeCapability` adds the capture sources and the encoders that passed a test encode. |
+| `Find-FFmpeg` | Phase 1 | Finds ffmpeg and ffprobe: the `-Path` parameter, then `$env:PSSCREENRECORDER_FFMPEG`, then `PATH`. Never installs. Throws with install suggestions for the current OS. The result is cached for the session. `-IncludeCapability` adds the capture sources and the encoders that passed a test encode (about 2s). That result is cached in memory and in `ffmpeg-capability.json` in the cache folder (LocalApplicationData on Windows, `~/Library/Caches` on macOS, XDG on Linux; `$env:PSSCREENRECORDER_CACHE` overrides it). The file is reused while a fingerprint matches, checked without starting ffmpeg: path, version, size, modified time, computer name, and the module's lists of known sources and encoders. It is checked again after 30 days (GPU drivers change) or with `-Refresh`. |
 | `Get-VideoMetadata` | Phase 1 | ffprobe JSON as a typed object: duration as a `TimeSpan`, width, height, frame rate, codec, bitrate, size. Named so it doesn't clash with the `Get-MediaInfo` module. |
 | `ConvertTo-Gif` | Phase 1 | One-pass palette (`split`, then `palettegen`, then `paletteuse`). Options: `-Fps`, `-Width`, `-Start`, `-End`, `-Dither`, `-Loop`, `-RemoveDuplicateFrames` (`mpdecimate`), `-Force`. Pipeline input by `FullName`. Alias `convert-mp4togif`. Later: `-MaxSize`. |
 | `Start-ScreenRecording` | Phase 2 | Returns a session object. Targets: `-Monitor`, `-Window`, `-CurrentTerminal`, `-Rectangle`, or a region from the pipeline. Start and stop: `-Delay`, `-Duration`, `-StartOnFocusLoss`, `-StopOnFocusReturn`, and `-Wait`. Options: `-Quality Lossless\|High\|Standard`, `-Codec H264\|HEVC\|AV1`, `-Encoder Auto\|Software\|Nvenc\|Qsv\|Amf\|MediaFoundation\|VideoToolbox`. |
@@ -137,7 +137,9 @@ The readme says the same.
 2. **Integration tests** (`tests/`, need ffmpeg, skipped if it's missing) make clips with `testsrc2`, run them through the commands, and check the results with ffprobe: duration, size, codec, frame count, and that a killed recording can still be read.
 3. **Windows capture smoke tests** are marked `-Skip:(-not $IsWindows)`. Mixed-DPI correctness is a manual checklist.
 
-CI runs the main Ubuntu job (with coverage and the PR comment) plus a matrix of Windows, macOS and ARM runners. Every runner installs ffmpeg so the integration tests run.
+CI runs the main Ubuntu job (with coverage and the PR comment) plus a matrix of `windows-latest`, `windows-11-arm`, `macos-latest` and `ubuntu-24.04-arm`. Every runner installs ffmpeg so the integration tests run: apt, brew, or a BtbN build on Windows, found through `PSSCREENRECORDER_FFMPEG`. `buildTest/Smoke.Tests.ps1` runs the published module against a real ffmpeg, and `buildTest.yml.example` installs ffmpeg for it.
+
+How the mocking works: every ffmpeg and ffprobe call goes through `Invoke-FFmpeg`, so unit tests use `Mock Invoke-FFmpeg` and return canned output, such as ffprobe JSON or `-encoders` listings trimmed from real ffmpeg 9.1. Nothing runs, so there's no waiting. `Invoke-FFmpeg` itself is tested against pwsh and a generated `.cmd`/`sh` script standing in for ffmpeg. This is the same idea as the `git` alias mock in ModuleForge's `Write-MFModuleDocs` tests, one level higher.
 
 ---
 
