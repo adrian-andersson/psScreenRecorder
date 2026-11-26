@@ -6,7 +6,7 @@
     </TN>
     <MS>
       <S N="moduleName">psScreenRecorder</S>
-      <S N="description">Desktop Video Capture with PowerShell</S>
+      <S N="description">Cross-platform screen recording and GIF making with ffmpeg</S>
       <Version N="minimumPsVersion">7.6</Version>
       <S N="testDependencies">All</S>
       <Obj N="moduleAuthors" RefId="1">

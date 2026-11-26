@@ -90,9 +90,22 @@ Describe 'Invoke-FFmpeg' {
             }
         }
 
+        It 'Passes an empty argument through, as macOS device listing needs for -i ""' {
+            $result = Invoke-FFmpeg -ExecutablePath $fakeTool -ArgumentList ($baseArguments + @('before','','after'))
+            $result.StandardOutput | Should -Contain 'arg:'
+            $result.StandardOutput | Should -Contain 'arg:after'
+        }
+
         It 'Throws on a non-zero exit, with the exit code and the end of stderr' {
             $env:PSSR_FAKE_EXIT = '3'
             { Invoke-FFmpeg -ExecutablePath $fakeTool -ArgumentList $baseArguments } | Should -Throw '*exited with code 3*the real error*'
+        }
+
+        It 'Returns the result instead of throwing with -IgnoreExitCode' {
+            $env:PSSR_FAKE_EXIT = '1'
+            $result = Invoke-FFmpeg -ExecutablePath $fakeTool -ArgumentList $baseArguments -IgnoreExitCode
+            $result.ExitCode | Should -Be 1
+            $result.StandardError | Should -Contain 'the real error'
         }
 
         It 'Still throws its own error when native command errors are turned on' {

@@ -43,6 +43,8 @@ function Invoke-FFmpeg
         #Arguments for the tool, one element per argument
         [Parameter(Mandatory)]
         [AllowEmptyCollection()]
+        #Some arguments are deliberately empty, such as macOS device listing's -i ""
+        [AllowEmptyString()]
         [string[]]$ArgumentList,
         #Which tool to run
         [Parameter()]
@@ -56,7 +58,10 @@ function Invoke-FFmpeg
         [timespan]$ExpectedDuration,
         #Run this executable instead of the one Find-FFmpeg finds. Used by Find-FFmpeg itself
         [Parameter(DontShow)]
-        [string]$ExecutablePath
+        [string]$ExecutablePath,
+        #Return the result instead of throwing when the exit code is not 0. Some ffmpeg queries, such as listing macOS capture devices, always exit with an error
+        [Parameter()]
+        [switch]$IgnoreExitCode
     )
     begin{
         write-verbose "===========Executing $($MyInvocation.InvocationName)==========="
@@ -137,7 +142,7 @@ function Invoke-FFmpeg
         }
 
         write-verbose "$Tool exited with code: $exitCode"
-        if($exitCode -ne 0)
+        if($exitCode -ne 0 -and !$IgnoreExitCode)
         {
             $tail = $standardError | Select-Object -Last $errorTailLength
             throw "$Tool exited with code $($exitCode): $($tail -join [Environment]::NewLine)"

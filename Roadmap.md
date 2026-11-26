@@ -33,10 +33,10 @@ The plan was agreed in November 2026. Version 1.0.8, published to PSGallery in J
 | `Find-FFmpeg` | Phase 1 | Finds ffmpeg and ffprobe: the `-Path` parameter, then `$env:PSSCREENRECORDER_FFMPEG`, then `PATH`. Never installs. Throws with install suggestions for the current OS. The result is cached for the session. `-IncludeCapability` adds the capture sources and the encoders that passed a test encode (about 2s). That result is cached in memory and in `ffmpeg-capability.json` in the cache folder (LocalApplicationData on Windows, `~/Library/Caches` on macOS, XDG on Linux; `$env:PSSCREENRECORDER_CACHE` overrides it). The file is reused while a fingerprint matches, checked without starting ffmpeg: path, version, size, modified time, computer name, and the module's lists of known sources and encoders. It is checked again after 30 days (GPU drivers change) or with `-Refresh`. |
 | `Get-VideoMetadata` | Phase 1 | ffprobe JSON as a typed object: duration as a `TimeSpan`, width, height, frame rate, codec, bitrate, size. Named so it doesn't clash with the `Get-MediaInfo` module. |
 | `ConvertTo-Gif` | Phase 1 | One-pass palette (`split`, then `palettegen`, then `paletteuse`). Options: `-Fps`, `-Width`, `-Start`, `-End`, `-Dither`, `-Loop`, `-RemoveDuplicateFrames` (`mpdecimate`), `-Force`. Pipeline input by `FullName`. Alias `convert-mp4togif`. Later: `-MaxSize`. |
-| `Start-ScreenRecording` | Phase 2 | Returns a session object. Targets: `-Monitor`, `-Window`, `-CurrentTerminal`, `-Rectangle`, or a region from the pipeline. Start and stop: `-Delay`, `-Duration`, `-StartOnFocusLoss`, `-StopOnFocusReturn`, and `-Wait`. Options: `-Quality Lossless\|High\|Standard`, `-Codec H264\|HEVC\|AV1`, `-Encoder Auto\|Software\|Nvenc\|Qsv\|Amf\|MediaFoundation\|VideoToolbox`. |
-| `Stop-ScreenRecording` | Phase 2 | Sends `q` to ffmpeg's stdin, waits, remuxes the `.mkv` to `.mp4` with `+faststart`, and returns the file and its metadata. |
-| `Get-ScreenRecording` | Phase 2 | Running sessions: elapsed time, frames, dropped frames (from `-progress`). |
-| `Get-CaptureTarget` | Phase 2/3 | Lists monitors and windows with their bounds in physical pixels. |
+| `Start-ScreenRecording` | Phase 2: done | Returns a session object. Targets: `-Monitor`, `-Window`, `-CurrentTerminal`, `-Rectangle`, or a region from the pipeline. Start and stop: `-Delay`, `-Duration`, `-StartOnFocusLoss`, `-StopOnFocusReturn`, and `-Wait`. Options: `-Quality Lossless\|High\|Standard`, `-Codec H264\|HEVC\|AV1`, `-Encoder Auto\|Software\|Nvenc\|Qsv\|Amf\|MediaFoundation\|VideoToolbox`. |
+| `Stop-ScreenRecording` | Phase 2: done | Sends `q` to ffmpeg's stdin, waits, remuxes the `.mkv` to `.mp4` with `+faststart`, and returns the file and its metadata. |
+| `Get-ScreenRecording` | Phase 2: done | Running sessions: elapsed time, frames, dropped frames (from `-progress`). |
+| `Get-CaptureTarget` | Phase 2: done | Lists monitors and windows with their bounds in physical pixels. |
 | `Select-ScreenRegion` | Phase 3 | Drag-to-select overlay that outputs a rectangle, so `Select-ScreenRegion \| Start-ScreenRecording` works. |
 | `Invoke-ScreenRecording` | Phase 3 | `-ScriptBlock { ... }` records the current terminal while the script block runs. Gives repeatable README demos. |
 | `Compress-Video` | Phase 3 | Replaces `start-psMp4Optimize` from 1.0.14: re-encodes a lossless recording to something smaller. `-Codec`, `-MaxSize`. |
@@ -75,7 +75,11 @@ Names were checked against PSGallery in November 2026. `ConvertTo-Gif` also exis
 - **Current terminal.** `GetForegroundWindow()` at the moment the command runs. Without P/Invoke (for example under CLM), walk `(Get-Process -Id $PID).Parent` up to the terminal (WindowsTerminal, Code, and so on) and pass `window_exe` to `gfxcapture`.
   - The 1.x code looked for `Get-Process *powershell*` with a `MainWindowHandle`. Under Windows Terminal or VS Code no pwsh process has one, so the handle was `$null` and recording never stopped.
 - **Recordings survive a crash.** Record to `.mkv`, then on stop remux to `.mp4` (`-c copy -movflags +faststart`), which is instant. An MP4 whose ffmpeg was killed has no index and won't play.
-- **No orphaned ffmpeg.** Register a `PowerShell.Exiting` handler that stops running sessions, and store PIDs so `Stop-ScreenRecording` works from a new session.
+- **No orphaned ffmpeg.** Two findings from testing changed the plan:
+  - `PowerShell.Exiting` only fires when an interactive session exits. It doesn't fire when a `-Command` or script session ends, or on a crash.
+  - ffmpeg ignores its stdin closing, so it doesn't stop when its parent goes away.
+
+  So `Register-ProcessCleanup` handles this at the OS level. On Windows, a Job Object set to kill on close ends ffmpeg however PowerShell ends. On macOS and Linux, an `sh` watchdog (which ignores HUP) sends ffmpeg `SIGINT`, its clean stop. The `Exiting` handler stays as the gentler `q` path for interactive exits. The `.mkv` is readable either way. Still to do: let `Stop-ScreenRecording` find recordings from another session by PID.
 - **Quality presets.**
   - `Lossless`: `libx264rgb -crf 0 -preset ultrafast`, or `hevc_nvenc` lossless, in `.mkv`. This was the 2022 approach; text stays crisp and GIFs come out best. Most players can't play RGB H.264, so `Compress-Video` or `ConvertTo-*` comes next.
   - `High` and `Standard`: hardware encoders where available, `yuv420p` for compatibility.
@@ -161,13 +165,23 @@ How the mocking works: every ffmpeg and ffprobe call goes through `Invoke-FFmpeg
 
 ### Phase 2: recording core
 
-- [ ] Capture-target model, plus `Get-CaptureTarget` (monitors first)
-- [ ] Argument builders for each backend (gfxcapture, ddagrab, gdigrab, avfoundation, x11grab, synthetic)
-- [ ] Encoder capability detection with test encodes and a cache
-- [ ] `Start-FFmpegProcess`, `Start-`/`Stop-`/`Get-ScreenRecording`, with `.mkv` then remux to `.mp4`
-- [ ] `-Delay`, `-Duration`, `-Wait`; clean-up on `PowerShell.Exiting`
-- [ ] Windows: DPI-aware helper for monitors, windows and the cursor; `-CurrentTerminal`
-- [ ] Focus modes: `-StartOnFocusLoss` / `-StopOnFocusReturn` (Windows first)
+- [x] Capture-target model, plus `Get-CaptureTarget` (monitors, windows, current terminal)
+- [x] Argument builders for each backend (gfxcapture, ddagrab, gdigrab, avfoundation, x11grab, synthetic)
+- [x] Encoder capability detection with test encodes and a cache (done in Phase 1), plus `Select-VideoEncoder`
+- [x] `Start-FFmpegProcess`, `Start-`/`Stop-`/`Get-ScreenRecording`, with `.mkv` then remux to `.mp4`
+- [x] `-Delay`, `-Duration`, `-Wait`; clean-up through `Register-ProcessCleanup` and `PowerShell.Exiting`
+- [x] Windows: DPI-aware helper for monitors, windows and the cursor; `-CurrentTerminal`
+- [x] Focus modes: `-StartOnFocusLoss` / `-StopOnFocusReturn` (Windows first). Unit tested with a mocked foreground window; **needs testing by hand**
+
+Findings from Phase 2 testing (Windows 11, ffmpeg 9.1, RTX 3090, single 3440x1440 monitor at 100%):
+
+- Every backend records monitors and regions. gfxcapture, ddagrab and gdigrab regions were checked against a crop of a full-monitor recording with ffmpeg's `psnr` filter: about 49 dB, effectively identical. **To compare odd offsets, convert to RGB first.** `crop` rounds x and y down to even values on 4:2:0 video, which makes a correct capture look wrong.
+- gfxcapture records a window 2 pixels smaller than its DWM frame bounds (`capture_border` is off). That's expected.
+- Frames are copied back from the GPU (`hwdownload`) and converted to `yuv420p`/`nv12` before encoding. That keeps every encoder and player happy at the cost of a CPU copy. **Still to do:** a zero-copy GPU path (`gfxcapture`/`ddagrab` straight into NVENC, QSV or AMF) for speed.
+- ddagrab is only chosen automatically with a single monitor, until `output_idx` is confirmed to match the Windows monitor order on a multi-monitor rig.
+- libx264rgb stores planar RGB (`gbrp`), so lossless converts straight to that.
+- macOS screens come from the AVFoundation device list, which has no sizes, so macOS regions are relative to the main screen. Linux uses xrandr, falling back to xdpyinfo (Xvfb).
+- Real screen-capture tests run on Windows outside CI, or anywhere with `PSSCREENRECORDER_TEST_CAPTURE=1`. Synthetic-source tests run everywhere.
 
 ### Phase 3: polish
 
