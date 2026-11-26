@@ -42,10 +42,24 @@ Describe 'Initialize-ScreenRecorderNative' {
     }
 
     Context 'On Windows' -Skip:(!$IsWindows) {
-        It 'Compiles the helper, and does nothing the second time' {
-            Initialize-ScreenRecorderNative
-            'PsScreenRecorder.Native' -as [type] | Should -Not -BeNullOrEmpty
-            { Initialize-ScreenRecorderNative } | Should -Not -Throw
+        It 'Compiles the helper and returns its type, then returns the same type without compiling again' {
+            $native = Initialize-ScreenRecorderNative
+            $native | Should -BeOfType [type]
+            $native.FullName | Should -Match '^PsScreenRecorder\.H[0-9a-f]{10}\.Native$'
+            Initialize-ScreenRecorderNative | Should -Be $native
+        }
+
+        It 'Finds its own helper even when an older version''s is already loaded under the old fixed name' {
+            #prev002 compiled PsScreenRecorder.Native without SelectRegion. In the same session, prev003 must not use it
+            if(!('PsScreenRecorder.Native' -as [type]))
+            {
+                Add-Type -TypeDefinition 'namespace PsScreenRecorder { public static class Native { public static int OlderVersion() { return 2; } } }'
+            }
+            $script:psScreenRecorderNative = $null
+            $native = Initialize-ScreenRecorderNative
+            $native.FullName | Should -Not -Be 'PsScreenRecorder.Native'
+            $native.GetMethod('SelectRegion') | Should -Not -BeNullOrEmpty
+            $native.GetMethod('KillWithThisProcess') | Should -Not -BeNullOrEmpty
         }
 
         It 'Lists at least one monitor, with a size and a primary' {
@@ -74,8 +88,8 @@ Describe 'Initialize-ScreenRecorderNative' {
             }finally{
                 $driver.Dispose()
             }
-            $origin = @([PsScreenRecorder.Native]::GetMonitors() | ForEach-Object { $_.Left }) | Measure-Object -Minimum
-            $top = @([PsScreenRecorder.Native]::GetMonitors() | ForEach-Object { $_.Top }) | Measure-Object -Minimum
+            $origin = @(Get-NativeMonitorInfo | ForEach-Object { $_.Left }) | Measure-Object -Minimum
+            $top = @(Get-NativeMonitorInfo | ForEach-Object { $_.Top }) | Measure-Object -Minimum
             $selection | Should -Be @(($origin.Minimum + 100), ($top.Minimum + 50), 400, 300)
         }
 

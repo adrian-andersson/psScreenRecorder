@@ -52,6 +52,8 @@ Describe 'Stop-ScreenRecording' {
         $script:psScreenRecorderRecordings = [System.Collections.Generic.List[object]]::new()
         Mock Stop-FFmpegProcess { [PSCustomObject]@{ ExitCode = 0; StandardError = ''; Killed = $false } }
         Mock Complete-ScreenRecording { $Recording.State = 'Saved'; [System.IO.FileInfo]::new("recording-$($Recording.Id).mp4") }
+        #Keep the real cache folder, and any recordings other sessions really left there, out of these tests
+        Mock Get-OtherSessionRecording {}
     }
 
     It 'Stops every running or ended recording when given nothing' {
@@ -168,5 +170,19 @@ Describe 'Recordings from other sessions, through Get- and Stop-ScreenRecording'
         Mock Complete-ScreenRecording {}
         $null = Stop-ScreenRecording
         Should -Invoke Stop-OtherSessionRecording -Times 0 -Exactly
+    }
+
+    It 'Stops this session''s and other sessions'' recordings with -AllSessions' {
+        Mock Complete-ScreenRecording { [System.IO.FileInfo]::new('mine.mp4') }
+        $saved = @(Stop-ScreenRecording -AllSessions)
+        $saved.Name | Should -Be @('mine.mp4','other.mp4')
+        Should -Invoke Stop-OtherSessionRecording -Times 1 -Exactly
+    }
+
+    It 'Says when other sessions have recordings, if this one has none to stop' {
+        $script:psScreenRecorderRecordings = [System.Collections.Generic.List[object]]::new()
+        Mock Write-Warning {}
+        $null = Stop-ScreenRecording
+        Should -Invoke Write-Warning -ParameterFilter { $Message -like '*other sessions have 1: abandoned other.mp4*-AllSessions*' }
     }
 }

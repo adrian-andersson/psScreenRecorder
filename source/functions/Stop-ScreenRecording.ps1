@@ -8,8 +8,10 @@ function Stop-ScreenRecording
             Asks ffmpeg to stop (by sending it 'q', its own way of finishing cleanly), waits for it to finish
             writing, then saves the recording to its final file and returns that file.
 
-            With no parameters, stops every recording that's still running, which is usually the one. Give
-            -Recording, or -Id, to stop a particular one.
+            With no parameters, stops every recording this session is still running, which is usually the one.
+            Give -Recording, or -Id, to stop a particular one. -AllSessions also stops or finishes recordings
+            other PowerShell sessions are running or left behind. If there's nothing to stop here but other
+            sessions have recordings, the warning says so.
 
             A recording that has already ended by itself, because its -Duration ran out, is saved.
 
@@ -40,6 +42,12 @@ function Stop-ScreenRecording
 
             #### DESCRIPTION
             Stop recording number 2 only.
+
+        .EXAMPLE
+            Stop-ScreenRecording -AllSessions
+
+            #### DESCRIPTION
+            Stop and save everything recording anywhere, and finish recordings closed terminals left behind.
     #>
 
     [CmdletBinding(DefaultParameterSetName='All',SupportsShouldProcess)]
@@ -52,6 +60,9 @@ function Stop-ScreenRecording
         #The Id of the recording to stop
         [Parameter(Mandatory,ParameterSetName='Id')]
         [int[]]$Id,
+        #Also stop, or finish, recordings other PowerShell sessions started or left behind
+        [Parameter(ParameterSetName='All')]
+        [switch]$AllSessions,
         #How long to give ffmpeg to finish writing before it's ended: seconds, mm:ss or hh:mm:ss
         [Parameter()]
         [ToTimeSpan()]
@@ -79,9 +90,19 @@ function Stop-ScreenRecording
             }
             'All' {
                 $running = @($known | Where-Object { $_.State -in 'Recording','Ended' })
+                $others = @(Get-OtherSessionRecording | Where-Object { $_.State -in 'Recording','Abandoned' })
+                if($AllSessions)
+                {
+                    $running = @($running) + @($others)
+                }
                 if(!$running)
                 {
-                    Write-Warning 'There are no recordings to stop'
+                    if($others)
+                    {
+                        Write-Warning "There are no recordings to stop in this session, but other sessions have $($others.Count): $(($others | ForEach-Object { "$($_.State.ToLower()) $([System.IO.Path]::GetFileName($_.Path))" }) -join ', '). Use Stop-ScreenRecording -AllSessions to stop and save them"
+                    }else{
+                        Write-Warning 'There are no recordings to stop'
+                    }
                 }
                 $running
             }
