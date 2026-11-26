@@ -1,0 +1,271 @@
+name: Execute Pester Testing
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+
+jobs:
+  pesterTest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read #PR code runs in this job, so it gets nothing else. The pesterComment job posts the PR comment
+    outputs:
+      coverage: ${{ steps.pester_tests.outputs.coverage }}
+      coverageTarget: ${{ steps.pester_tests.outputs.coverageTarget }}
+      result: ${{ steps.pester_tests.outputs.result }}
+      passedCount: ${{ steps.pester_tests.outputs.passedCount }}
+      failedCount: ${{ steps.pester_tests.outputs.failedCount }}
+      skippedCount: ${{ steps.pester_tests.outputs.skippedCount }}
+      duration: ${{ steps.pester_tests.outputs.duration }}
+      pesterVersion: ${{ steps.pester_tests.outputs.pesterVersion }}
+      toolSources: ${{ steps.pester_tests.outputs.toolSources }}
+
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          #What testDependencies in moduleForgeConfig.xml asks for: None, PesterAndScriptAnalyzer (the default) or All. Never ModuleForge
+          $installed = ./scripts/Install-MFBuildDependencies.ps1 -ForTests
+          $installed|Format-Table -Property Name,Version,Description
+          #Each step is a new session, so the test step imports exactly these versions, and the comment says where they came from
+          "MF_TEST_MODULES=$(($installed|ForEach-Object { "$($_.Name)=$($_.ModuleVersion)" }) -join ';')" >> $env:GITHUB_ENV
+          "MF_TEST_MODULE_SOURCES=$(($installed|ForEach-Object { "$($_.Name)|$($_.Version)|$($_.Description)" }) -join ';')" >> $env:GITHUB_ENV
+
+      #psScreenRecorder never ships ffmpeg. The runner installs it from the distribution so the integration tests in tests/ run.
+      #Without it they are skipped, not failed, and the unit tests (which mock ffmpeg) still run
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          fi
+          ffmpeg -hide_banner -version | head -1
+
+      - name: Run Pester tests
+        shell: pwsh
+        id: pester_tests
+        run: |
+          #Exactly the versions the install step resolved, so a newer copy elsewhere on the runner can't take their place
+          foreach($entry in ($env:MF_TEST_MODULES -split ';' | Where-Object { $_ }))
+          {
+            $moduleName, $moduleVersion = $entry -split '=', 2
+            if(!$moduleVersion){ throw "$moduleName was not installed" }
+            Import-Module -Name $moduleName -RequiredVersion $moduleVersion -ErrorAction Stop
+          }
+          $functionsPath = $(join-path -path (join-path -path . -childpath 'source') -childpath 'functions')
+          $privatePath = $(join-path -path (join-path -path . -childpath 'source') -childpath 'private')
+          # Discover tests alongside functions AND private; if a root 'tests' folder exists (case-insensitive), also discover it. Coverage stays on source/functions only.
+          $runPaths = @($functionsPath)
+          if(test-path $privatePath){ $runPaths += $privatePath }
+          $testsFolder = Get-ChildItem -LiteralPath . -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'tests' } | Select-Object -First 1
+          if($testsFolder){ $runPaths += $testsFolder.FullName }
+          $pesterConfigHash = @{
+              Run = @{
+                  Passthru = $true
+                  Path = $runPaths
+              }
+              CodeCoverage = @{
+                  Enabled = $true
+                  Path = $(if(test-path $privatePath){ @($functionsPath,$privatePath) }else{ $functionsPath })
+              }
+              Output = @{
+                  Verbosity = 'Detailed'
+              }
+          }
+          $pesterConfig = New-PesterConfiguration -hashtable $pesterConfigHash
+
+          try{
+            Invoke-Pester -Configuration $pesterConfig|Tee-Object -variable pesterCapture
+          }catch{
+            write-verbose "WARNING: Pester threw an exception: $($_.Exception.Message)"
+            $pesterFailed = $true
+          }
+
+          if($pesterCapture)
+          {
+            # Export as job output. The pesterComment job builds the PR comment from these
+            "coverage=$([math]::Round($pesterCapture.CodeCoverage.CoveragePercent, 0))" >> $env:GITHUB_OUTPUT
+            "coverageTarget=$($pesterCapture.CodeCoverage.CoveragePercentTarget)" >> $env:GITHUB_OUTPUT
+            "result=$($pesterCapture.Result)" >> $env:GITHUB_OUTPUT
+            "passedCount=$($pesterCapture.PassedCount)" >> $env:GITHUB_OUTPUT
+            "failedCount=$($pesterCapture.FailedCount)" >> $env:GITHUB_OUTPUT
+            "skippedCount=$($pesterCapture.SkippedCount)" >> $env:GITHUB_OUTPUT
+            "duration=$($pesterCapture.Duration.toString())" >> $env:GITHUB_OUTPUT
+            "pesterVersion=$($pesterCapture.Version)" >> $env:GITHUB_OUTPUT
+            "toolSources=$($env:MF_TEST_MODULE_SOURCES)" >> $env:GITHUB_OUTPUT
+          }else{
+            throw 'Error with Pester Invocation'
+          }
+
+          if($pesterFailed){throw 'Error with Pester invocation'}
+          if($pesterCapture.Result -eq 'Failed'){throw "Pester failed: $($pesterCapture.FailedCount) test(s), $($pesterCapture.FailedContainersCount) container(s)"}
+
+  pesterComment:
+    needs: pesterTest
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      pull-requests: write #Needed for adding comment. This job must never checkout or run repository code
+
+    steps:
+      - name: Build PR comment
+        shell: pwsh
+        env:
+          #These values were written while PR code was running, so they are untrusted. Read them from env, never in script text
+          COVERAGE: ${{ needs.pesterTest.outputs.coverage }}
+          COVERAGE_TARGET: ${{ needs.pesterTest.outputs.coverageTarget }}
+          PESTER_RESULT: ${{ needs.pesterTest.outputs.result }}
+          PASSED_COUNT: ${{ needs.pesterTest.outputs.passedCount }}
+          FAILED_COUNT: ${{ needs.pesterTest.outputs.failedCount }}
+          SKIPPED_COUNT: ${{ needs.pesterTest.outputs.skippedCount }}
+          PESTER_DURATION: ${{ needs.pesterTest.outputs.duration }}
+          PESTER_VERSION: ${{ needs.pesterTest.outputs.pesterVersion }}
+          TOOL_SOURCES: ${{ needs.pesterTest.outputs.toolSources }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          $pesterResult = $env:PESTER_RESULT
+          if($pesterResult -match '^[A-Za-z]+$')
+          {
+            $cc = [int]$env:COVERAGE
+            $ccp = [int]$env:COVERAGE_TARGET
+            $passedCount = [int]$env:PASSED_COUNT
+            $failedCount = [int]$env:FAILED_COUNT
+            $skippedCount = [int]$env:SKIPPED_COUNT
+            $duration = $(if($env:PESTER_DURATION -match '^[0-9:.]+$'){$env:PESTER_DURATION}else{'Unknown'})
+            $pesterVersion = $(if($env:PESTER_VERSION -match '^[0-9A-Za-z.\-]+$'){$env:PESTER_VERSION}else{'Unknown'})
+            $midpoint = $ccp + ((100 - $ccp) / 2)
+            #One line per test module, with where it came from. Fall back to the Pester version alone
+            $moduleLines = @(($env:TOOL_SOURCES -split ';') | Where-Object { $_ -match "^[A-Za-z0-9.]+\|[0-9A-Za-z.\-]+\|[A-Za-z0-9 .,'()\[\]\-]+$" } | ForEach-Object {
+              $parts = $_ -split '\|'
+              "**$($parts[0]):** $($parts[1]) · $($parts[2])"
+            })
+            if(!$moduleLines){ $moduleLines = @("**Pester Version:** $pesterVersion") }
+            $badge = $(if($cc -lt $ccp){"🔴 Failed"}elseIf($cc -lt $midpoint){"🟡 Caution"}elseIf($cc -lt 98){"🟢 Good"}else{"🟢 Perfect 🏅"})
+            $pesterMarkdown = @(
+              "### 🧪 Pester Test Results"
+              "**Result:** $pesterResult $(if($pesterResult -eq 'Passed'){"✅"}else{"❌"})"
+              "**Tests:** 🟢 $passedCount passed | 🔴 $failedCount failed | ⚪ $skippedCount skipped"
+              "**Duration:** $duration"
+              "`n"
+              "### 📊 Code Coverage"
+              "**Coverage:**  $($cc)% $badge"
+              "**Target:** $($ccp)%"
+              "`n"
+              "### ℹ️ Runtime Info"
+              $moduleLines
+              "**PSVersion:** $($psversiontable.PSVersion.ToString()) $($psversiontable.PSEdition)"
+              "**OS:** $($psversiontable.OS) $($psversiontable.Platform)"
+              "`n"
+              "_This comment was generated automatically by the CI pipeline._"
+            ) -join "`n"
+          }else{
+            $pesterMarkdown = @(
+              '### ❌ Pester Test Run Failed'
+              'Pester encountered an error and could not complete the test run.'
+              'Please check the logs for more details.'
+              '_This comment was generated automatically by the CI pipeline._'
+            ) -join "`n"
+          }
+          $pesterMarkdown|out-file -FilePath pesterMarkdown.md -encoding UTF8
+          #When, and from which push, as GitHub only says an edited comment changed
+          $runUrl = "$($env:GITHUB_SERVER_URL)/$($env:GITHUB_REPOSITORY)/actions/runs/$($env:GITHUB_RUN_ID)"
+          $commit = if($env:HEAD_SHA -match '^[0-9a-f]{7,40}$'){ $env:HEAD_SHA.Substring(0,7) }else{ 'unknown' }
+          $attempt = if([int]$env:GITHUB_RUN_ATTEMPT -gt 1){ ", attempt $($env:GITHUB_RUN_ATTEMPT)" }
+          "`n_Updated $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm')) UTC for commit ``$commit`` · [run $($env:GITHUB_RUN_NUMBER)$attempt]($runUrl)_"|Add-Content -Path pesterMarkdown.md -Encoding UTF8
+
+      - name: Add Coverage PR Comment
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+        with:
+          path: pesterMarkdown.md
+          header: pesterResult
+
+  codeCoverageCheck:
+      needs: pesterTest
+      runs-on: ubuntu-latest
+      permissions: {} #Only compares two numbers, so it needs no token access
+      continue-on-error: true
+      steps:
+        - name: Check Coverage Threshold
+          shell: pwsh
+          env:
+            COVERAGE: ${{ needs.pesterTest.outputs.coverage }} #PR code writes this value, so keep it out of the script text
+            COVERAGE_TARGET: ${{ needs.pesterTest.outputs.coverageTarget }}
+          run: |
+            $coverage = [int]$env:COVERAGE
+            $coverageTarget = [int]$env:COVERAGE_TARGET
+            Write-Verbose "Coverage from previous job: $coverage%"
+
+            if ($coverage -lt $coverageTarget) {
+              Write-Error "Code coverage ($coverage%) is below the required threshold ($coverageTarget%)."
+              exit 1
+            } else {
+              Write-Verbose "Coverage is acceptable."
+            }
+
+  # Test on Windows, macOS and ARM as well, as psScreenRecorder is cross-platform.
+  # These runs fail the check if a test fails, but the PR comment and coverage check above
+  # only report the Ubuntu run, so their results never overwrite each other.
+  pesterTestOtherOS:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm, macos-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      #Each platform's usual way of getting ffmpeg. psScreenRecorder itself never installs it
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          fi
+
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            brew install --quiet ffmpeg
+          fi
+
+      #Windows has no system package for ffmpeg, so use a BtbN build, native for the runner's architecture.
+      #It is found through PSSCREENRECORDER_FFMPEG rather than PATH, which tests that route too
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $architecture = $(if($env:RUNNER_ARCH -eq 'ARM64'){'winarm64'}else{'win64'})
+          $zipUri = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-$architecture-gpl.zip"
+          $zipPath = Join-Path -Path $env:RUNNER_TEMP -ChildPath 'ffmpeg.zip'
+          $extractPath = Join-Path -Path $env:RUNNER_TEMP -ChildPath 'ffmpeg'
+          Invoke-WebRequest -Uri $zipUri -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+          $binFolder = (Get-ChildItem -Path $extractPath -Recurse -Filter 'ffmpeg.exe' | Select-Object -First 1).DirectoryName
+          "PSSCREENRECORDER_FFMPEG=$binFolder" >> $env:GITHUB_ENV
+
+      - name: Run Pester tests
+        shell: pwsh
+        run: |
+          ./scripts/Install-MFBuildDependencies.ps1 -ForTests | Format-Table
+          $result = ./scripts/Invoke-MFPester.ps1 -SkipCodeCoverage -Verbosity Normal
+          if($result.Result -ne 'Passed'){throw "Pester failed on $($env:RUNNER_OS) $($env:RUNNER_ARCH): $($result.FailedCount) test(s)"}

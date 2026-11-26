@@ -1,0 +1,263 @@
+# =============================================================================
+# OPTIONAL WORKFLOW — requires manual setup before enabling
+# =============================================================================
+#
+# This workflow automatically generates documentation and opens a pull request
+# against the docs branch after each Build and Release run. It can also
+# be triggered manually to document any release (stable or prerelease).
+#
+# BEFORE ENABLING:
+#   1. Create a fine-grained Personal Access Token:
+#      GitHub Settings > Developer settings > Personal access tokens > Fine-grained tokens
+#      - Resource owner: your account or organisation
+#      - Repository access: Only select repositories > this repository
+#      - Repository permissions:
+#          Contents:       Read and write  (to push the docs-update branch)
+#          Pull requests:  Read and write  (to open the PR against docs)
+#   2. Add the token as a repository secret named DOCS_PAT:
+#      Settings > Secrets and variables > Actions > New repository secret
+#   3. Rename this file to docsUpdate.yml (remove the .example extension)
+#   4. Ensure you have a docs branch that GitHub Pages serves from.
+#      The workflow opens PRs against that branch — you review and merge manually.
+#
+# WHY A PAT?
+#   GitHub's built-in GITHUB_TOKEN cannot push branches or create PRs in all
+#   repository configurations. The PAT is used ONLY in the final step
+#   (Create pull request). All earlier steps use the standard GITHUB_TOKEN.
+# =============================================================================
+
+name: Docs Update
+
+on:
+  workflow_run:
+    workflows: ["Build and Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      release_selector:
+        description: 'Which release to document'
+        required: true
+        default: 'latest-stable'
+        type: choice
+        options:
+          - latest-release
+          - latest-stable
+          - latest-prerelease
+
+jobs:
+  docsUpdate:
+    runs-on: ubuntu-latest
+    #A dry run of Build and Release succeeds without publishing, and says DRY RUN in its run name
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && !contains(github.event.workflow_run.display_title, 'DRY RUN')) }}
+    permissions:
+      packages: read
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Get release details
+        id: get_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $VerbosePreference = 'Continue'
+
+          # Auto-trigger documents the latest release (prerelease or stable); manual trigger respects the selector input
+          $releaseSelector = if('${{ github.event_name }}' -eq 'workflow_dispatch')
+          {
+            '${{ github.event.inputs.release_selector }}'
+          }else{
+            'latest-release'
+          }
+          write-verbose "Release selector: $releaseSelector"
+
+          write-verbose 'Getting release list'
+          $releases = gh release list --limit 100 --json tagName,name,isPrerelease,createdAt | ConvertFrom-Json -ErrorAction Stop
+
+          if($releaseSelector -eq 'latest-release')
+          {
+            $release = $releases | Select-Object -First 1
+          }
+          elseif($releaseSelector -eq 'latest-stable')
+          {
+            $release = $releases | Where-Object { -not $_.isPrerelease } | Select-Object -First 1
+          }
+          else
+          {
+            $release = $releases | Where-Object { $_.isPrerelease } | Select-Object -First 1
+          }
+
+          if(!$release)
+          {
+            throw "No matching release found for selector: $releaseSelector"
+          }
+
+          write-verbose "Selected release: $($release.tagName) — isPrerelease: $($release.isPrerelease)"
+          "tag_name=$($release.tagName)" | Out-File $env:GITHUB_OUTPUT -Append
+          "skip=false"                   | Out-File $env:GITHUB_OUTPUT -Append
+
+      - name: Install dependencies
+        if: steps.get_release.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          $VerbosePreference = 'Continue'
+          #The versions pinned in BuildDependencies.psd1. Write-MFModuleDocs needs Microsoft.PowerShell.PlatyPS 1.0 or newer, not the older platyPS
+          $installed = ./scripts/Install-MFBuildDependencies.ps1 -Name ModuleForge,Microsoft.PowerShell.PlatyPS
+          $installed|Format-Table -Property Name,Version,Description
+          #Each step is a new session, so the documentation step imports exactly these versions
+          "MF_DOCS_MODULES=$(($installed|ForEach-Object { "$($_.Name)=$($_.ModuleVersion)" }) -join ';')" >> $env:GITHUB_ENV
+          Import-Module Microsoft.PowerShell.PSResourceGet, ModuleForge, Microsoft.PowerShell.PlatyPS
+          Get-Module Microsoft.PowerShell.PSResourceGet, ModuleForge, Microsoft.PowerShell.PlatyPS | Select-Object Name, Version | Format-Table
+
+      - name: Register GitHub Packages repository
+        if: steps.get_release.outputs.skip != 'true'
+        id: repoSetup
+        shell: pwsh
+        run: |
+          $VerbosePreference = 'Continue'
+          $repoUrl = "https://nuget.pkg.github.com/$($env:GITHUB_REPOSITORY_OWNER)/index.json"
+          write-verbose "Got repoUrl: $repoUrl"
+          $repositorySplat = @{
+            Uri     = $repoUrl
+            Trusted = $true
+            Name    = 'myGHPackages'
+          }
+          Register-PSResourceRepository @repositorySplat
+          write-verbose "Repositories:`n$(Get-PSResourceRepository | Select-Object Name,Uri,Trusted | Format-List | Out-String)"
+
+      - name: Install module from GitHub Packages
+        if: steps.get_release.outputs.skip != 'true'
+        id: moduleInstall
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          tagName: ${{ steps.get_release.outputs.tag_name }}
+        run: |
+          $VerbosePreference = 'Continue'
+          if(!(Test-Path .\moduleForgeConfig.xml))
+          {
+            throw 'Error reading ModuleForge Config'
+          }
+          $config     = Import-Clixml .\moduleForgeConfig.xml
+          $moduleName = $config.moduleName
+          write-verbose "ModuleName: $moduleName"
+
+          $credential = New-Object System.Management.Automation.PSCredential(
+            'githubActions',
+            (ConvertTo-SecureString $env:GH_TOKEN -AsPlainText -Force)
+          )
+
+          $versionString = $env:tagName.Substring(1)
+          $semver        = [semver]::New($versionString)
+          write-verbose "Version: $semver"
+
+          $fetchSplat = @{
+            Repository = 'myGHPackages'
+            Name       = $moduleName
+            Credential = $credential
+            Version    = $semver
+          }
+          $selectedRelease = Find-PSResource @fetchSplat
+          write-verbose "Found release: $($selectedRelease | Format-List | Out-String)"
+          if($selectedRelease)
+          {
+            $selectedRelease | Install-PSResource -Credential $credential
+          }else{
+            throw "Module $moduleName version $semver not found in GitHub Packages"
+          }
+
+          write-verbose 'Resolving module case'
+          Resolve-MFModuleCase -ModuleName $moduleName
+
+          $moduleFound = $(Get-Module -ListAvailable).where{ $_.Name -ieq $moduleName }
+          if($moduleFound)
+          {
+            write-verbose "Module found at: $($moduleFound.moduleBase)"
+            Import-Module $moduleName
+            write-verbose "Imported: $(Get-Module $moduleName | Select-Object Name,Version | Out-String)"
+          }else{
+            throw 'Module not found after install — case resolution may have failed'
+          }
+
+          "module_name=$moduleName" | Out-File $env:GITHUB_OUTPUT -Append
+
+      - name: Checkout docs branch
+        if: steps.get_release.outputs.skip != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: docs
+          path: docs-branch
+          persist-credentials: false #The PR step pushes with DOCS_PAT. A persisted GITHUB_TOKEN would override it
+
+      - name: Generate documentation
+        if: steps.get_release.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          MODULE_NAME: ${{ steps.moduleInstall.outputs.module_name }}
+        run: |
+          $VerbosePreference = 'Continue'
+          $moduleName = $env:MODULE_NAME
+          #Exactly the versions the install step resolved, so a newer copy elsewhere on the runner can't take their place
+          foreach($entry in ($env:MF_DOCS_MODULES -split ';' | Where-Object { $_ }))
+          {
+            $name, $version = $entry -split '=', 2
+            if(!$version){ throw "$name was not installed" }
+            Import-Module -Name $name -RequiredVersion $version -ErrorAction Stop
+          }
+          write-verbose "Generating docs for $moduleName"
+          Write-MFModuleDocs -ModuleName $moduleName -ModulePath ./docs-branch -StampAllDocs
+
+      - name: Create pull request
+        if: steps.get_release.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.DOCS_PAT }}
+          DOCS_PAT: ${{ secrets.DOCS_PAT }}
+          TAG_NAME: ${{ steps.get_release.outputs.tag_name }}
+        run: |
+          $VerbosePreference = 'Continue'
+          $tagName    = $env:TAG_NAME
+          $branchName = "docs-update/$tagName"
+
+          Push-Location ./docs-branch
+          try
+          {
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git checkout -b $branchName
+
+            $changes = git status --porcelain
+            if(!$changes)
+            {
+              write-verbose 'No documentation changes detected — skipping PR'
+              return
+            }
+
+            git add .
+            git commit -m "docs: update documentation for $tagName"
+
+            $repoUrl = "https://x-access-token:$($env:DOCS_PAT)@github.com/$env:GITHUB_REPOSITORY.git"
+            git remote set-url origin $repoUrl
+            git push origin $branchName
+          }
+          finally
+          {
+            Pop-Location
+          }
+
+          $existingPr = gh pr list --base docs --head $branchName --json number --jq '.[0].number' 2>$null
+          if($existingPr)
+          {
+            write-verbose "Pull request already exists: #$existingPr - branch has been updated in place"
+          }else{
+            gh pr create `
+              --base docs `
+              --head $branchName `
+              --title "docs: update for $tagName" `
+              --body "Automated documentation update for $tagName.`nGenerated by Write-MFModuleDocs with -StampAllDocs.`nReview and merge when ready — no code changes are included."
+          }

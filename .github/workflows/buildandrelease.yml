@@ -1,0 +1,389 @@
+name: Build and Release
+run-name: "Build and Release: ${{ inputs.release }}${{ inputs.dry_run && ' - DRY RUN' || '' }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      #A release goes: New Prerelease Series once, Next Prerelease as often as needed, then Promote to Stable
+      #The version step reads the text before the bracket, so keep these prefixes if you reword an option
+      release:
+        description: 'What are you releasing? Start a series once, run Next Prerelease until it is ready, then Promote to Stable'
+        required: true
+        default: 'Next Prerelease (x.y.z-prevN -> prevN+1, or starts a patch series from stable)'
+        type: choice
+        options:
+          - 'Next Prerelease (x.y.z-prevN -> prevN+1, or starts a patch series from stable)'
+          - 'New Prerelease Series: minor (x.y.z -> x.Y.0-prev001)'
+          - 'New Prerelease Series: major (x.y.z -> X.0.0-prev001)'
+          - 'Promote to Stable (x.y.z-prevN -> x.y.z)'
+          #To release a stable version without a prerelease series first, uncomment these. Needs ModuleForge 1.4.1 or newer
+          #- 'Stable Release: patch (x.y.z -> x.y.Z)'
+          #- 'Stable Release: minor (x.y.z -> x.Y.0)'
+          #- 'Stable Release: major (x.y.z -> X.0.0)'
+      dependency_source:
+        description: 'Advanced: where to install ModuleForge and other build modules from. required-resource-file uses the versions pinned in BuildDependencies.psd1'
+        required: false
+        default: 'required-resource-file'
+        type: choice
+        options:
+          - required-resource-file
+          - psgallery-latest
+          - psgallery-prerelease
+      include_source_metadata:
+        description: 'Advanced: add the branch and commit this was built from to the package metadata'
+        required: false
+        default: true
+        type: boolean
+      dry_run:
+        description: 'Advanced: dry run. Work out the version and build, but do not tag, release or publish'
+        required: false
+        default: false
+        type: boolean
+
+
+jobs:
+  buildAndRelease:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write #required for pushing tags and creating releases
+      packages: write #Needed for publishing to Github packages
+      actions: read #Grant read access to actions and logs
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 #Ensure we are getting all the tag history
+          persist-credentials: false #The build runs repository code, so keep the token off disk. Only the tag step gets it
+
+      - name: Git Check
+        shell: pwsh
+        run: |
+          $VerbosePreference = 'Continue'
+          $gitVer = git --version
+          $gitFolder = git rev-parse --is-inside-work-tree
+          write-verbose "GitVersion: $gitVer"
+          write-verbose "IsGitWorkingDirectory: $gitFolder"
+
+      - name: Check Pester Test Workflow status
+        shell: pwsh
+        env:
+          REPO_URI: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $VerbosePreference = 'Continue'
+          $workflow = 'pesterTest.yml'
+          $Owner = "$env:GITHUB_REPOSITORY_OWNER"
+          $Repo = "$env:GITHUB_REPOSITORY"
+          write-verbose "Owner: $owner"
+          write-verbose "Repo: $repo"
+          $repositoryUri = "https://github.com/$($env:REPO_URI)"
+          $apiUri = "https://api.github.com/repos/$Repo/actions/workflows/$Workflow/runs?per_page=2&status=completed"
+          write-verbose "apiUri: $apiUri"
+          $token = $env:GITHUB_TOKEN
+          $headers = @{
+            Authorization = "token $token"
+            Accept = 'application/vnd.github.v3+json'
+          }
+          $WorkflowRuns = Invoke-RestMethod -Uri $apiUri -Headers $Headers -ve
+          $LatestRun = $WorkflowRuns.workflow_runs | Select-Object -First 1
+          if(!$latestRun){throw "❌ No $($workflow) workflows found"}
+          write-verbose "LatestPesterRun Status: $($LatestRun.conclusion) LatestRun SHA: $($LatestRun.head_sha)"
+          if($latestRun.conclusion -ne 'success'){
+            throw "❌ The most recent Pester Test failed. Fix the issues before proceeding."
+          }
+          $LatestTestSHA = $LatestRun.head_sha
+          $gitLog = git log --pretty=format:"%H - %s" -n 2
+          #write-verbose "Git Log:`n$($gitLog|out-string)"
+          $split = $gitLog[0].split(' - ')
+          $lastSha = $split[0]
+          $message = $split[1]
+          write-verbose "Last Commit SHA: $lastSha"
+          if($lastSha -eq $LatestTestSHA)
+          {
+            write-host '✅ Pester Test validation passed! Matched last commit'
+          }elseIf($message -like 'Merge pull request*'){
+            write-verbose 'Last commit was a merge. Checking previous commit'
+            $split2 = $gitLog[1].split(' - ')
+            $prSha = $split2[0]
+            $prMessage = $split2[1]
+            write-verbose "Last PR SHA: $prSha"
+            if($prSha -eq $LatestTestSHA)
+            {
+              write-host '✅ Pester Test validation passed! Matched PR Test Commit'
+            }else{
+              throw "❌ The most recent Pester Test failed. Fix the issues before proceeding."
+            }
+          }else{
+            throw "❌ No match on PR or primary commit with last Pester Test. Please check pester and try again!"
+          }
+
+      - name: Install dependencies #Install the modules we need for the build, from BuildDependencies.psd1 unless asked otherwise
+        shell: pwsh
+        env:
+          DEPENDENCY_SOURCE: ${{ github.event.inputs.dependency_source }}
+        run: |
+          $VerbosePreference = 'Continue'
+          $source = switch($env:DEPENDENCY_SOURCE)
+          {
+            'psgallery-latest' { 'PSGallery' }
+            'psgallery-prerelease' { write-verbose '********WARNING: Will use the latest ModuleForge, even if it is a prerelease ********'; 'PSGalleryPrerelease' }
+            default { 'RequiredResourceFile' }
+          }
+          $installed = ./scripts/Install-MFBuildDependencies.ps1 -Source $source -Name ModuleForge
+          $installed|Format-Table
+          #Each step is a new session, so later steps import this exact version, in case a persistent runner has others
+          $moduleForgeVersion = $installed.Version -replace '-.*$',''
+          "MODULEFORGE_VERSION=$moduleForgeVersion" >> $env:GITHUB_ENV
+          import-module Microsoft.PowerShell.PSResourceGet
+          import-module ModuleForge -RequiredVersion $moduleForgeVersion
+          $moduleList = @('Microsoft.PowerShell.PSResourceGet','ModuleForge')
+          get-module $moduleList|Select-object Name,@{name='version';expression={if($_.PrivateData.PSData.Prerelease){"$($_.Version)-$($_.PrivateData.PSData.Prerelease)"}else{"$($_.Version)"}}}|Format-Table
+
+      - name: Get next version and build #Execute the moduleForge command to create new module files
+        shell: pwsh
+        id: generate_tag
+        if: success()
+        env:
+          RELEASE: ${{ inputs.release }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          $VerbosePreference = 'Continue'
+          import-module ModuleForge -RequiredVersion $env:MODULEFORGE_VERSION
+          #A rerun of a run that already tagged this commit should finish that version, not make another.
+          #Drop the local tag so the version and changelog are worked out as they were. The tag step puts it back
+          $existingTag = if([int]$env:RUN_ATTEMPT -gt 1){ git tag --points-at HEAD | Where-Object { $_ -match '^v\d+\.\d+\.\d+' } | Select-Object -First 1 }
+          if($existingTag)
+          {
+            write-verbose "Rerun of a run that tagged this commit as $existingTag. Finishing that version"
+            git tag -d $existingTag
+            $latest = $existingTag.TrimStart('v')
+            $nextVersion = [semver]$existingTag.TrimStart('v')
+          }else{
+            $latest = get-mfGitLatestVersion
+            #Work out the release type and increment from the release choice. Only the text before the bracket counts
+            $choice = ($env:RELEASE -split '\(')[0].Trim()
+            if($choice -notmatch '^(Next Prerelease|New Prerelease Series|Promote to Stable|Stable Release)')
+            {
+              throw "❌ Unrecognised release choice '$($env:RELEASE)'. It should start with Next Prerelease, New Prerelease Series, Promote to Stable or Stable Release"
+            }
+            $releaseType = if($choice -match '^(Promote to Stable|Stable Release)'){ 'stable' }else{ 'prerelease' }
+            write-verbose "Version Release Type: $releaseType"
+            $versionType = if($choice -match '\b(major|minor|patch)\b'){ $Matches[1].ToLower() }else{ 'none' }
+            write-verbose "Version Increment Type: $versionType"
+            if($releaseType -eq 'stable' -and $versionType -eq 'none' -and !([semver]$latest).PreReleaseLabel)
+            {
+              throw "❌ v$latest is already stable, so there is no prerelease to promote. Run Next Prerelease or start a New Prerelease Series first. To release a stable version without a prerelease series, uncomment the Stable Release options in .github/workflows/buildandrelease.yml"
+            }
+            $nextVerSplat = @{
+              version = $latest #The current version
+            }
+            if($versionType -eq 'none'){
+              write-verbose 'Bumping current version'
+            }else{
+              write-verbose "Changing $versionType version"
+              $nextVerSplat.increment = $versionType
+            }
+            if($releaseType -eq 'prerelease'){
+              write-verbose 'Adding PreRelease Tag'
+              $nextVerSplat.prerelease = $true
+            }else{
+              write-verbose 'Stable Release'
+              $nextVerSplat.stablerelease = $true
+            }
+            $nextVersion = get-mfNextSemver @nextVerSplat
+          }
+          Write-Verbose "NEXT VERSION SHOULD BE: $nextVersion"
+          #Say what this run will do before building, at the top of the run's summary page
+          $planTitle = if($env:DRY_RUN -eq 'true'){ '## 🧪 Release plan - DRY RUN, nothing is tagged, released or published' }else{ '## 🚀 Release plan' }
+          @(
+            $planTitle
+            ''
+            '|Latest version|Release|Next version|'
+            '|---|---|---|'
+            "|$(if($latest){"v$latest"}else{'none'})|$($env:RELEASE)|**v$nextVersion**|"
+            ''
+          ) -join "`n" >> $env:GITHUB_STEP_SUMMARY
+          write-verbose 'Compiling Changelog'
+          $changeLog = get-mfGitChangeLog -fromLastTag
+          Build-mfProject -version $nextVersion -InformationAction Continue -releaseNotes $changeLog
+          write-verbose "Push $nextVersion to workflow as EnvVar"
+          write-output "next_version=$nextVersion" >> $env:GITHUB_OUTPUT
+          write-verbose "Push changeLog to workflow as EnvVar"
+          #Need to do this as a special multiline value so it works correctly
+          "change_log<<EOF" >> $env:GITHUB_OUTPUT
+          $changeLog >> $env:GITHUB_OUTPUT
+          "EOF" >> $env:GITHUB_OUTPUT
+
+      - name: Publish to Local #Push the build from last step to a temporary file-based repository on the build machine. Add Repository to XML for GHPackages Compatibility
+        shell: pwsh
+        id: publish_local
+        if: success()
+        env:
+          REPO_URI: ${{ github.repository }}
+          INCLUDE_SOURCE_METADATA: ${{ github.event.inputs.include_source_metadata }}
+        run: |
+          $VerbosePreference = 'continue'
+          import-module ModuleForge -RequiredVersion $env:MODULEFORGE_VERSION
+          $repositoryUri = "https://github.com/$($env:REPO_URI)"
+          write-verbose "Repository URI: $repositoryUri"
+          $currentPath = get-location
+          #Find the item from the build
+          #Find the manifest by name, as the module's resource folder can ship other .psd1 files
+          $moduleName = (Import-Clixml moduleForgeConfig.xml).moduleName
+          $psd1Ref = (Get-Item -Path (Join-Path -Path . -ChildPath "build/$moduleName/$moduleName.psd1") -ErrorAction SilentlyContinue).FullName
+          if($psd1Ref)
+          {
+            write-verbose "Found PSD1 file: $psd1Ref"
+          }else{
+            throw 'No PSD1 file found'
+          }
+
+          $repositoryPath = join-path -path $currentPath -childPath 'LocalRepository'
+          write-verbose "Will create local repository at path: $repositoryPath"
+          if(!(test-path $repositoryPath))
+          {
+            new-item -itemType Directory -path $repositoryPath
+          }
+          register-mfLocalPsResourceRepository -path $repositoryPath
+          publish-psresource -repository LocalTestRepository -path $psd1Ref
+
+          $nuRef = (get-childItem -path $repositoryPath -recurse -filter *.nupkg).fullname
+          if($nuRef)
+          {
+            write-verbose "Found NUPKG: $nuRef"
+          }else{
+            throw 'No NUPKG found'
+          }
+          $repositoryXmlSplat = @{
+            repositoryUri = $repositoryUri
+            nugetPackagePath = $nuRef
+          }
+          if($env:INCLUDE_SOURCE_METADATA -ne 'false')
+          {
+            write-verbose "Adding source metadata: branch $($env:GITHUB_REF_NAME), commit $($env:GITHUB_SHA)"
+            $repositoryXmlSplat.Branch = $env:GITHUB_REF_NAME
+            $repositoryXmlSplat.Commit = $env:GITHUB_SHA
+          }
+          add-mfRepositoryXmlData @repositoryXmlSplat
+
+      - name: Build summary #Version, size and hashes on the run's summary page
+        shell: pwsh
+        if: success()
+        run: |
+          import-module ModuleForge -RequiredVersion $env:MODULEFORGE_VERSION
+          if(get-command Get-MFBuildSummary -ErrorAction SilentlyContinue)
+          {
+            $nuRef = (get-childItem -path (join-path -path (get-location) -childPath 'LocalRepository') -recurse -filter *.nupkg).fullname
+            (Get-MFBuildSummary -NugetPackagePath $nuRef).Markdown >> $env:GITHUB_STEP_SUMMARY
+          }else{
+            write-warning 'This ModuleForge version has no Get-MFBuildSummary, so there is no build summary'
+          }
+
+      - name: Create new tag #Create version tag
+        shell: pwsh
+        if: success() && !inputs.dry_run #A dry run stops before anything is tagged, released or published
+        env:
+          NEXT_VERSION: ${{ steps.generate_tag.outputs.next_version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $VerbosePreference = 'Continue'
+          write-verbose 'Post VerbosePreference'
+          Write-Verbose "Creating tag v$($env:NEXT_VERSION)"
+          $ver = "v$($env:NEXT_VERSION)"
+
+          if($ver -and $ver -ne 'v' -and $ver.length -ge 6)
+          {
+            write-verbose "Tagging Version as: $ver"
+            git tag "$ver"
+            #Checkout did not keep the token, so hand it to this push only, through env rather than the command line
+            $basicAuth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("x-access-token:$($env:GITHUB_TOKEN)"))
+            write-output "::add-mask::$basicAuth"
+            $env:GIT_CONFIG_COUNT = '1'
+            $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
+            $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $basicAuth"
+            #On a rerun the tag is already on the remote, on this same commit, so this push changes nothing
+            git push origin "refs/tags/$ver"
+            if($LASTEXITCODE -ne 0){throw "Unable to push tag $ver"}
+          }else{
+            throw 'No Version Tag found'
+          }
+
+      - name: Create GitHub Release #Push the nupkg and tag as a release
+        shell: pwsh
+        if: success() && !inputs.dry_run #A dry run stops before anything is tagged, released or published
+        env:
+          NEXT_VERSION: ${{ steps.generate_tag.outputs.next_version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANGE_LOG: ${{ steps.generate_tag.outputs.change_log }}
+        run: |
+          $VerbosePreference = 'Continue'
+          $ver = "v$($env:NEXT_VERSION)"
+          #A rerun keeps the release an earlier attempt made, rather than replace its package
+          $null = gh release view $ver 2>&1
+          if($LASTEXITCODE -eq 0)
+          {
+            write-warning "Release $ver already exists, so it is left as it is"
+            exit 0
+          }
+          $releaseName = "Release $($ver)"
+          #Reuse changelog from buildAndRelease step
+          $markdownText = $($env:CHANGE_LOG)
+          if(!$markdownText){
+            $markdownText = "#Release Version: $ver`n_no changelog provided_`n"
+          }
+          #Get the NuPkg file to send with the release
+          $currentPath = get-location
+          $repositoryPath = join-path -path $currentPath -childPath 'LocalRepository'
+          $nuRef = (get-childItem -path $repositoryPath -recurse -filter *.nupkg).fullname
+          if($nuRef)
+          {
+            write-verbose "Found NUPKG: $nuRef"
+          }else{
+            throw 'No NUPKG found'
+          }
+          write-verbose 'Adding Module and Manifest SHAs to Release Notes for verification'
+          # Load module name from ModuleForge config
+          $moduleName = (Import-Clixml moduleForgeConfig.xml).moduleName
+          # Locate the manifest and module script
+          $psd1Ref = Get-ChildItem -Path build -Filter "$moduleName.psd1" -Recurse | Select-Object -First 1
+          $psm1Ref = Get-ChildItem -Path build -Filter "$moduleName.psm1" -Recurse | Select-Object -First 1
+          # Compute SHA256 hashes
+          $psd1Sha = (Get-FileHash -Path $psd1Ref.FullName -Algorithm SHA256).Hash.ToLower()
+          $psm1Sha = (Get-FileHash -Path $psm1Ref.FullName -Algorithm SHA256).Hash.ToLower()
+          # Append to markdown
+          $markDownText = "$($markDownText)`n### 🔐 SHA256 Checksums`n$("$moduleName").psd1: $psd1Sha `n$("$moduleName").psm1: $psm1Sha"
+          # Flag prerelease tags (SemVer prerelease label, e.g. v1.3.0-prev009) so GitHub does not
+          # badge them as "Latest"; stable releases are marked latest explicitly.
+          if($ver -like '*-*')
+          {
+            gh release create $ver --title $releaseName --notes $markDownText --prerelease
+          }else{
+            gh release create $ver --title $releaseName --notes $markDownText --latest
+          }
+          gh release upload $ver $nuRef
+
+      - name: Publish to GitHub Packages #Publish module to GH Packages
+        shell: pwsh
+        if: success() && !inputs.dry_run #A dry run stops before anything is tagged, released or published
+        env:
+          NEXT_VERSION: ${{ steps.generate_tag.outputs.next_version }}
+          REPO_URI: ${{ github.repository_owner }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $VerbosePreference = 'Continue'
+          $ver = "v$($env:NEXT_VERSION)"
+          $repoUri = "https://nuget.pkg.github.com/$($env:REPO_URI)/index.json"
+          $currentPath = get-location
+          $repositoryPath = join-path -path $currentPath -childPath 'LocalRepository'
+          $nuRef = (get-childItem -path $repositoryPath -recurse -filter *.nupkg).fullname
+          if($nuRef)
+          {
+            write-verbose "Found NUPKG: $nuRef"
+          }else{
+            throw 'No NUPKG found'
+          }
+          #A rerun keeps the package an earlier attempt published
+          dotnet nuget push $nuRef -k $env:GITHUB_TOKEN -s $repoUri --skip-duplicate

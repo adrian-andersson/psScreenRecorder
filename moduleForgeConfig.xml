@@ -1,0 +1,48 @@
+<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">
+  <Obj RefId="0">
+    <TN RefId="0">
+      <T>System.Management.Automation.PSCustomObject</T>
+      <T>System.Object</T>
+    </TN>
+    <MS>
+      <S N="moduleName">psScreenRecorder</S>
+      <S N="description">Desktop Video Capture with PowerShell</S>
+      <Version N="minimumPsVersion">7.6</Version>
+      <S N="testDependencies">All</S>
+      <Obj N="moduleAuthors" RefId="1">
+        <TN RefId="1">
+          <T>System.String[]</T>
+          <T>System.Array</T>
+          <T>System.Object</T>
+        </TN>
+        <LST>
+          <S>Adrian.Andersson</S>
+        </LST>
+      </Obj>
+      <S N="companyName"></S>
+      <Obj N="tags" RefId="2">
+        <TNRef RefId="1" />
+        <LST>
+          <S>ffmpeg</S>
+          <S>screenrecording</S>
+          <S>screen-capture</S>
+          <S>gif</S>
+          <S>video</S>
+          <S>Windows</S>
+          <S>Linux</S>
+          <S>MacOS</S>
+          <S>PSEdition_Core</S>
+        </LST>
+      </Obj>
+      <S N="projectUri">https://github.com/adrian-andersson/psScreenRecorder</S>
+      <Nil N="licenseUri" />
+      <S N="guid">66b95cf8-97e8-4448-8015-38d0e35456a0</S>
+      <S N="moduleforgeVersion">1.4.1</S>
+      <S N="iconUri">https://raw.githubusercontent.com/adrian-andersson/psScreenRecorder/main/icon.png</S>
+      <Nil N="requiredModules" />
+      <Nil N="ExternalModuleDependencies" />
+      <S N="DefaultCommandPrefix"></S>
+      <Nil N="PrivateData" />
+    </MS>
+  </Obj>
+</Objs>

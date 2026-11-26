@@ -1,0 +1,8 @@
+# ModuleForge build output
+build/
+
+# Local test and analyzer reports
+testResults*.xml
+coverage*.xml
+pesterMarkdown.md
+projectRules.md
