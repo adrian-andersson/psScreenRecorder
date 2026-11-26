@@ -25,6 +25,12 @@ function Initialize-ScreenRecorderNative
               GetCursorPosition()      the mouse pointer, as [x, y]
               KillWithThisProcess(h)   end the process with handle h when this PowerShell process ends, however
                                        it ends, by putting it in a Job Object set to kill on close
+              SelectRegion()           show an overlay over every monitor and let the person drag out an area.
+                                       Returns [x, y, width, height], or null if cancelled with Esc or a right-click
+
+            The overlay is a plain Win32 window rather than WinForms, so it can be made per-monitor DPI aware
+            itself and report physical pixels. It reads the mouse only from its window messages, which lets
+            tests drive it by posting messages to it. It's excluded from screen capture where Windows allows.
 
         .NOTES
             Author: Adrian Andersson
@@ -328,6 +334,291 @@ namespace PsScreenRecorder
                 }
             }
             return AssignProcessToJobObject(cleanupJob, processHandle);
+        }
+
+        //------------------------------------------------------------------------------------------------
+        //Region selection overlay
+        //------------------------------------------------------------------------------------------------
+        delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct WNDCLASSEX
+        {
+            public uint cbSize;
+            public uint style;
+            public WndProcDelegate lpfnWndProc;
+            public int cbClsExtra;
+            public int cbWndExtra;
+            public IntPtr hInstance;
+            public IntPtr hIcon;
+            public IntPtr hCursor;
+            public IntPtr hbrBackground;
+            public string lpszMenuName;
+            public string lpszClassName;
+            public IntPtr hIconSm;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct MSG
+        {
+            public IntPtr hwnd;
+            public uint message;
+            public IntPtr wParam;
+            public IntPtr lParam;
+            public uint time;
+            public POINT pt;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct PAINTSTRUCT
+        {
+            public IntPtr hdc;
+            public bool fErase;
+            public RECT rcPaint;
+            public bool fRestore;
+            public bool fIncUpdate;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+            public byte[] rgbReserved;
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern ushort RegisterClassEx(ref WNDCLASSEX lpwcx);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool UnregisterClass(string lpClassName, IntPtr hInstance);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr CreateWindowEx(uint dwExStyle, string lpClassName, string lpWindowName, uint dwStyle, int x, int y, int nWidth, int nHeight, IntPtr hWndParent, IntPtr hMenu, IntPtr hInstance, IntPtr lpParam);
+        [DllImport("user32.dll")] static extern bool DestroyWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] static extern IntPtr DefWindowProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")] static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+        [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG lpMsg);
+        [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG lpMsg);
+        [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint crKey, byte bAlpha, uint dwFlags);
+        [DllImport("user32.dll")] static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+        [DllImport("user32.dll")] static extern IntPtr SetCapture(IntPtr hWnd);
+        [DllImport("user32.dll")] static extern bool ReleaseCapture();
+        [DllImport("user32.dll")] static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
+        [DllImport("user32.dll")] static extern IntPtr BeginPaint(IntPtr hwnd, out PAINTSTRUCT lpPaint);
+        [DllImport("user32.dll")] static extern bool EndPaint(IntPtr hWnd, ref PAINTSTRUCT lpPaint);
+        [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+        [DllImport("user32.dll")] static extern int FillRect(IntPtr hDC, ref RECT lprc, IntPtr hbr);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int DrawText(IntPtr hdc, string lpchText, int cchText, ref RECT lprc, uint format);
+        [DllImport("user32.dll")] static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
+        [DllImport("user32.dll")] static extern int GetSystemMetrics(int nIndex);
+        [DllImport("user32.dll")] static extern IntPtr SetTimer(IntPtr hWnd, IntPtr nIDEvent, uint uElapse, IntPtr lpTimerFunc);
+        [DllImport("user32.dll")] static extern bool KillTimer(IntPtr hWnd, IntPtr uIDEvent);
+        [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vKey);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetModuleHandle(string lpModuleName);
+        [DllImport("gdi32.dll")] static extern IntPtr CreateSolidBrush(uint crColor);
+        [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr hObject);
+        [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+        [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int cx, int cy);
+        [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr hdc, IntPtr h);
+        [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr hdc);
+        [DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr hdc, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, uint rop);
+        [DllImport("gdi32.dll")] static extern int SetBkMode(IntPtr hdc, int mode);
+        [DllImport("gdi32.dll")] static extern uint SetTextColor(IntPtr hdc, uint color);
+        [DllImport("gdi32.dll", CharSet = CharSet.Unicode)] static extern IntPtr CreateFont(int cHeight, int cWidth, int cEscapement, int cOrientation, int cWeight, uint bItalic, uint bUnderline, uint bStrikeOut, uint iCharSet, uint iOutPrecision, uint iClipPrecision, uint iQuality, uint iPitchAndFamily, string pszFaceName);
+
+        public const string SelectorClassName = "PsScreenRecorderRegionSelector";
+        const uint WS_POPUP = 0x80000000;
+        const uint WS_EX_LAYERED = 0x00080000, WS_EX_TOPMOST = 0x00000008;
+        const uint LWA_COLORKEY = 0x1, LWA_ALPHA = 0x2;
+        const uint WDA_EXCLUDEFROMCAPTURE = 0x11;
+        const uint WM_PAINT = 0x000F, WM_ERASEBKGND = 0x0014, WM_KEYDOWN = 0x0100, WM_TIMER = 0x0113;
+        const uint WM_MOUSEMOVE = 0x0200, WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, WM_RBUTTONDOWN = 0x0204;
+        const int VK_ESCAPE = 0x1B;
+        //Magenta is drawn fully transparent, so the selected area shows through clear while the rest is dimmed
+        const uint ColorKey = 0x00FF00FF;
+        const byte DimAlpha = 110;
+        const int MinimumSize = 4;
+
+        static WndProcDelegate selectorProc;
+        static bool selecting, selectionDone, selectionCancelled;
+        static int startX, startY, currentX, currentY;
+        static IntPtr selectorFont = IntPtr.Zero;
+
+        static int LowWord(IntPtr value) { return (short)((long)value & 0xFFFF); }
+        static int HighWord(IntPtr value) { return (short)(((long)value >> 16) & 0xFFFF); }
+
+        static RECT SelectionRect()
+        {
+            return new RECT
+            {
+                Left = Math.Min(startX, currentX),
+                Top = Math.Min(startY, currentY),
+                Right = Math.Max(startX, currentX),
+                Bottom = Math.Max(startY, currentY)
+            };
+        }
+
+        static void PaintSelector(IntPtr hWnd)
+        {
+            PAINTSTRUCT paint;
+            IntPtr hdc = BeginPaint(hWnd, out paint);
+            RECT client;
+            GetClientRect(hWnd, out client);
+            //Draw into a buffer first, so the selection doesn't flicker while dragging
+            IntPtr buffer = CreateCompatibleDC(hdc);
+            IntPtr bitmap = CreateCompatibleBitmap(hdc, client.Right, client.Bottom);
+            IntPtr oldBitmap = SelectObject(buffer, bitmap);
+            IntPtr oldFont = SelectObject(buffer, selectorFont);
+            SetBkMode(buffer, 1);
+            SetTextColor(buffer, 0x00FFFFFF);
+
+            IntPtr dim = CreateSolidBrush(0x00000000);
+            FillRect(buffer, ref client, dim);
+            DeleteObject(dim);
+
+            if (selecting)
+            {
+                RECT selection = SelectionRect();
+                RECT border = new RECT { Left = selection.Left - 2, Top = selection.Top - 2, Right = selection.Right + 2, Bottom = selection.Bottom + 2 };
+                IntPtr red = CreateSolidBrush(0x000000FF);
+                FillRect(buffer, ref border, red);
+                DeleteObject(red);
+                IntPtr clear = CreateSolidBrush(ColorKey);
+                FillRect(buffer, ref selection, clear);
+                DeleteObject(clear);
+                string size = String.Format("{0} x {1}", selection.Right - selection.Left, selection.Bottom - selection.Top);
+                RECT label = new RECT { Left = selection.Left, Top = selection.Bottom + 8, Right = selection.Left + 600, Bottom = selection.Bottom + 60 };
+                DrawText(buffer, size, -1, ref label, 0x20 /*DT_SINGLELINE*/);
+            }
+            else
+            {
+                RECT centre = client;
+                DrawText(buffer, "Drag to select the area to record. Right-click or Esc to cancel.", -1, ref centre, 0x1 | 0x4 | 0x20 /*centred, single line*/);
+            }
+
+            BitBlt(hdc, 0, 0, client.Right, client.Bottom, buffer, 0, 0, 0x00CC0020 /*SRCCOPY*/);
+            SelectObject(buffer, oldFont);
+            SelectObject(buffer, oldBitmap);
+            DeleteObject(bitmap);
+            DeleteDC(buffer);
+            EndPaint(hWnd, ref paint);
+        }
+
+        static void CancelSelection()
+        {
+            selecting = false;
+            selectionCancelled = true;
+            selectionDone = true;
+        }
+
+        static IntPtr SelectorWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
+        {
+            switch (msg)
+            {
+                case WM_LBUTTONDOWN:
+                    selecting = true;
+                    startX = currentX = LowWord(lParam);
+                    startY = currentY = HighWord(lParam);
+                    SetCapture(hWnd);
+                    InvalidateRect(hWnd, IntPtr.Zero, false);
+                    return IntPtr.Zero;
+                case WM_MOUSEMOVE:
+                    if (selecting)
+                    {
+                        currentX = LowWord(lParam);
+                        currentY = HighWord(lParam);
+                        InvalidateRect(hWnd, IntPtr.Zero, false);
+                    }
+                    return IntPtr.Zero;
+                case WM_LBUTTONUP:
+                    if (selecting)
+                    {
+                        currentX = LowWord(lParam);
+                        currentY = HighWord(lParam);
+                        ReleaseCapture();
+                        //A click without a drag is ignored, rather than recording a sliver
+                        if (Math.Abs(currentX - startX) >= MinimumSize && Math.Abs(currentY - startY) >= MinimumSize)
+                        {
+                            selectionDone = true;
+                        }
+                        else
+                        {
+                            selecting = false;
+                            InvalidateRect(hWnd, IntPtr.Zero, false);
+                        }
+                    }
+                    return IntPtr.Zero;
+                case WM_RBUTTONDOWN:
+                    CancelSelection();
+                    return IntPtr.Zero;
+                case WM_KEYDOWN:
+                    if ((int)wParam == VK_ESCAPE) { CancelSelection(); }
+                    return IntPtr.Zero;
+                case WM_TIMER:
+                    //The terminal may keep keyboard focus, so Esc is also checked directly
+                    if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0) { CancelSelection(); }
+                    return IntPtr.Zero;
+                case WM_ERASEBKGND:
+                    return new IntPtr(1);
+                case WM_PAINT:
+                    PaintSelector(hWnd);
+                    return IntPtr.Zero;
+            }
+            return DefWindowProc(hWnd, msg, wParam, lParam);
+        }
+
+        public static int[] SelectRegion()
+        {
+            return WithDpiAwareness(() =>
+            {
+                selecting = false;
+                selectionDone = false;
+                selectionCancelled = false;
+                //The virtual desktop, every monitor together, in physical pixels
+                int originX = GetSystemMetrics(76), originY = GetSystemMetrics(77);
+                int width = GetSystemMetrics(78), height = GetSystemMetrics(79);
+
+                IntPtr instance = GetModuleHandle(null);
+                selectorProc = SelectorWndProc;
+                var windowClass = new WNDCLASSEX
+                {
+                    cbSize = (uint)Marshal.SizeOf(typeof(WNDCLASSEX)),
+                    lpfnWndProc = selectorProc,
+                    hInstance = instance,
+                    hCursor = LoadCursor(IntPtr.Zero, new IntPtr(32515)), //IDC_CROSS
+                    lpszClassName = SelectorClassName
+                };
+                RegisterClassEx(ref windowClass);
+                if (selectorFont == IntPtr.Zero)
+                {
+                    selectorFont = CreateFont(-28, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, "Segoe UI");
+                }
+
+                IntPtr window = CreateWindowEx(WS_EX_LAYERED | WS_EX_TOPMOST | (uint)WS_EX_TOOLWINDOW, SelectorClassName, "Select an area to record", WS_POPUP, originX, originY, width, height, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
+                if (window == IntPtr.Zero)
+                {
+                    UnregisterClass(SelectorClassName, instance);
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                }
+                try
+                {
+                    SetLayeredWindowAttributes(window, ColorKey, DimAlpha, LWA_COLORKEY | LWA_ALPHA);
+                    SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE);
+                    ShowWindow(window, 5);
+                    SetForegroundWindow(window);
+                    SetTimer(window, new IntPtr(1), 50, IntPtr.Zero);
+
+                    MSG message;
+                    while (!selectionDone && GetMessage(out message, IntPtr.Zero, 0, 0) > 0)
+                    {
+                        TranslateMessage(ref message);
+                        DispatchMessage(ref message);
+                    }
+                }
+                finally
+                {
+                    KillTimer(window, new IntPtr(1));
+                    ReleaseCapture();
+                    DestroyWindow(window);
+                    UnregisterClass(SelectorClassName, instance);
+                }
+
+                if (selectionCancelled) { return null; }
+                RECT selection = SelectionRect();
+                return new int[] { selection.Left + originX, selection.Top + originY, selection.Right - selection.Left, selection.Bottom - selection.Top };
+            });
         }
     }
 }

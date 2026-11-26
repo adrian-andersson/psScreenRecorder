@@ -22,6 +22,7 @@ function Get-NativeWindowInfo
     #>
 
     [CmdletBinding()]
+    [OutputType('PsScreenRecorder.WindowInfo','PsScreenRecorder.WindowInfo[]')]
     PARAM(
         #A window handle (HWND) to look up
         [Parameter()]
