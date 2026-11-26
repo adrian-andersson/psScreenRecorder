@@ -40,6 +40,7 @@ function Start-FFmpegProcess
         [string]$FFmpegPath,
         #Arguments, one element per argument
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string[]]$ArgumentList
     )
     begin{

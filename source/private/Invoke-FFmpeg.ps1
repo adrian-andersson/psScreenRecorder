@@ -43,6 +43,8 @@ function Invoke-FFmpeg
         #Arguments for the tool, one element per argument
         [Parameter(Mandatory)]
         [AllowEmptyCollection()]
+        #Some arguments are deliberately empty, such as macOS device listing's -i ""
+        [AllowEmptyString()]
         [string[]]$ArgumentList,
         #Which tool to run
         [Parameter()]
