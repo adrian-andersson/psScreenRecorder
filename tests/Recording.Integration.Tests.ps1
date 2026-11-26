@@ -112,7 +112,12 @@ Describe 'Recording with a real ffmpeg' -Skip:(!$ffmpegAvailable) {
 
         It 'Keeps a recording readable when ffmpeg is killed part way through' {
             $recording = Start-ScreenRecording -Synthetic -Path (Join-Path -Path $outputFolder -ChildPath 'killed.mp4')
-            Start-Sleep -Seconds 2
+            #Wait for a couple of seconds of video, however slow the runner is, so at least one cluster is on disk
+            $deadline = [datetime]::Now.AddSeconds(20)
+            while((Get-ScreenRecording -Id $recording.Id).Frames -lt 75 -and [datetime]::Now -lt $deadline)
+            {
+                Start-Sleep -Milliseconds 250
+            }
             $recording.Handle.Process.Kill($true)
             $null = $recording.Handle.Process.WaitForExit(30000)
             $null = Stop-ScreenRecording -Id $recording.Id -ErrorAction SilentlyContinue
