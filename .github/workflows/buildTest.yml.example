@@ -60,6 +60,15 @@ jobs:
           #Each step is a new session, so the test step imports this exact version
           "PESTER_VERSION=$($installed.ModuleVersion)" >> $env:GITHUB_ENV
 
+      #buildTest/Smoke.Tests.ps1 runs the published module against a real ffmpeg. psScreenRecorder never ships it
+      - name: Install ffmpeg
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          fi
+
       - name: Register GitHub Packages repository
         shell: pwsh
         if: success()
