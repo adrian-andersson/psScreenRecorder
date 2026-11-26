@@ -13,6 +13,10 @@ function Stop-ScreenRecording
 
             A recording that has already ended by itself, because its -Duration ran out, is saved.
 
+            Recordings from other PowerShell sessions, from Get-ScreenRecording -AllSessions, can be piped in
+            too. A running one is stopped (SIGINT on macOS and Linux; ended on Windows, losing at most the last
+            second), and an abandoned one is finished. Either way it's repaired into the file it was going to be.
+
             The returned file has Duration, Width, Height, FrameRate and VideoCodec added, and pipes straight
             into ConvertTo-Gif.
 
@@ -85,6 +89,11 @@ function Stop-ScreenRecording
 
         foreach($item in $toStop)
         {
+            if($item.PSObject.Properties['Session'] -and $item.Session -eq 'Other' -and $item.State -in 'Recording','Abandoned')
+            {
+                Stop-OtherSessionRecording -Recording $item -Timeout $Timeout -Confirm:$false -WhatIf:$WhatIfPreference
+                continue
+            }
             if($item.State -eq 'Saved')
             {
                 write-verbose "Recording $($item.Id) is already saved"

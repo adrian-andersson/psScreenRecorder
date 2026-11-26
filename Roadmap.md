@@ -37,8 +37,8 @@ The plan was agreed in November 2026. Version 1.0.8, published to PSGallery in J
 | `Stop-ScreenRecording` | Phase 2: done | Sends `q` to ffmpeg's stdin, waits, remuxes the `.mkv` to `.mp4` with `+faststart`, and returns the file and its metadata. |
 | `Get-ScreenRecording` | Phase 2: done | Running sessions: elapsed time, frames, dropped frames (from `-progress`). |
 | `Get-CaptureTarget` | Phase 2: done | Lists monitors and windows with their bounds in physical pixels. |
-| `Select-ScreenRegion` | Phase 3 | Drag-to-select overlay that outputs a rectangle, so `Select-ScreenRegion \| Start-ScreenRecording` works. |
-| `Invoke-ScreenRecording` | Phase 3 | `-ScriptBlock { ... }` records the current terminal while the script block runs. Gives repeatable README demos. |
+| `Select-ScreenRegion` | Phase 3: done | Drag-to-select overlay that outputs a rectangle, so `Select-ScreenRegion \| Start-ScreenRecording` works. |
+| `Invoke-ScreenRecording` | Phase 3: done | `-ScriptBlock { ... }` records the current terminal while the script block runs. Gives repeatable README demos. |
 | `Compress-Video` | Phase 3 | Replaces `start-psMp4Optimize` from 1.0.14: re-encodes a lossless recording to something smaller. `-Codec`, `-MaxSize`. |
 | `ConvertTo-WebP` | Phase 3 | Animated WebP, which is much smaller than GIF and renders on GitHub. The name clashes only with `PSImageConverter`; recheck before release. |
 | `Edit-Video` | Phase 3 | `-Start`, `-End`, `-Crop`, `-Speed`. |
@@ -76,10 +76,16 @@ Names were checked against PSGallery in November 2026. `ConvertTo-Gif` also exis
   - The 1.x code looked for `Get-Process *powershell*` with a `MainWindowHandle`. Under Windows Terminal or VS Code no pwsh process has one, so the handle was `$null` and recording never stopped.
 - **Recordings survive a crash.** Record to `.mkv`, then on stop remux to `.mp4` (`-c copy -movflags +faststart`), which is instant. An MP4 whose ffmpeg was killed has no index and won't play.
 - **No orphaned ffmpeg.** Two findings from testing changed the plan:
-  - `PowerShell.Exiting` only fires when an interactive session exits. It doesn't fire when a `-Command` or script session ends, or on a crash.
+  - `PowerShell.Exiting` couldn't be relied on. It didn't fire when a `-Command` or script session ended, when commands were piped into an interactive session that then exited, or on a crash, and a real interactive `exit` test still left a killed recording. The handler was removed in Batch A.
   - ffmpeg ignores its stdin closing, so it doesn't stop when its parent goes away.
 
-  So `Register-ProcessCleanup` handles this at the OS level. On Windows, a Job Object set to kill on close ends ffmpeg however PowerShell ends. On macOS and Linux, an `sh` watchdog (which ignores HUP) sends ffmpeg `SIGINT`, its clean stop. The `Exiting` handler stays as the gentler `q` path for interactive exits. The `.mkv` is readable either way. Still to do: let `Stop-ScreenRecording` find recordings from another session by PID.
+  So `Register-ProcessCleanup` handles this at the OS level. On Windows, a Job Object set to kill on close ends ffmpeg however PowerShell ends. On macOS and Linux, an `sh` watchdog (which ignores HUP) sends ffmpeg `SIGINT`, its clean stop. Recordings are written with 1-second Matroska clusters and `-flush_packets 1`, so at most about a second is lost.
+
+  **Recovery (Batch A).**
+  - Each recording writes an info file to the cache folder's `recordings` folder: ffmpeg's PID and start time (which guards against PID reuse), the owning session, and the file paths.
+  - `Get-ScreenRecording -AllSessions` shows other sessions' recordings as Recording or Abandoned, and piping them to `Stop-ScreenRecording` finishes them. A running one is stopped first: `SIGINT` on Unix, ended on Windows.
+  - `Repair-ScreenRecording` remuxes any left-behind `.mkv` to rebuild its index.
+  - `Complete-ScreenRecording` now saves what was recorded, with a warning, when ffmpeg ends unexpectedly, instead of failing.
 - **Quality presets.**
   - `Lossless`: `libx264rgb -crf 0 -preset ultrafast`, or `hevc_nvenc` lossless, in `.mkv`. This was the 2022 approach; text stays crisp and GIFs come out best. Most players can't play RGB H.264, so `Compress-Video` or `ConvertTo-*` comes next.
   - `High` and `Standard`: hardware encoders where available, `yuv420p` for compatibility.
@@ -185,8 +191,16 @@ Findings from Phase 2 testing (Windows 11, ffmpeg 9.1, RTX 3090, single 3440x144
 
 ### Phase 3: polish
 
-- [ ] `Select-ScreenRegion` overlay (WinForms/WPF; pwsh 7.6 is STA), excluded from capture
-- [ ] `Invoke-ScreenRecording -ScriptBlock`
+- [x] `Select-ScreenRegion` overlay (Batch A). It's a raw Win32 layered window in the native helper rather than WinForms, so it can be per-monitor DPI aware and report physical pixels:
+  - The area is dimmed, and the selection is see-through via a colour key.
+  - Right-click or Esc cancels. Esc is also polled with `GetAsyncKeyState`, as the terminal may keep keyboard focus.
+  - `WDA_EXCLUDEFROMCAPTURE` keeps it out of recordings.
+  - It's tested by posting mouse messages to it from a background runspace (`tests/helpers/Send-RegionSelectorInput.ps1`).
+  - Linux uses `slop`. macOS isn't supported yet.
+  - Gotcha: pass `[NullString]::Value`, not `$null`, to `FindWindow`'s title. PowerShell turns `$null` into an empty string, which only matches windows with no title.
+- [x] `Start-ScreenRecording -SelectRegion` (an empty `-Rectangle` can't bind)
+- [x] Recovery: `Repair-ScreenRecording`, plus `Get-ScreenRecording -AllSessions` piped to `Stop-ScreenRecording` (Batch A)
+- [x] `Invoke-ScreenRecording -ScriptBlock` (Batch A): `-LeadIn`, `-LeadOut`, `-ClearHost`. It records the terminal on Windows and the primary monitor elsewhere, and saves even if the script block fails
 - [ ] `Compress-Video`, `ConvertTo-WebP`, `Edit-Video`, `Export-VideoFrame`, `ConvertTo-Gif -MaxSize`
 - [ ] `Get-`/`Set-ScreenRecorderConfig`
 - [ ] A stop hotkey (`RegisterHotKey`)

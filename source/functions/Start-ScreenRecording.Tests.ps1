@@ -22,7 +22,11 @@ BeforeAll {
         'Stop-FFmpegProcess.ps1'
         'Read-FFmpegProgress.ps1'
         'Complete-ScreenRecording.ps1'
-        'Register-ScreenRecorderExitHandler.ps1'
+        'Write-RecordingInfoFile.ps1'
+        'New-RegionTarget.ps1'
+        'Select-ScreenRegion.ps1'
+        'Convert-RecordingContainer.ps1'
+        'Add-VideoMetadataMember.ps1'
         'Get-TerminalWindowHandle.ps1'
         'Wait-WindowFocus.ps1'
         'Wait-ScreenRecordingStop.ps1'
@@ -63,7 +67,7 @@ Describe 'Start-ScreenRecording' {
         }
         #A first progress block, so the start-up check moves straight on
         Mock Read-FFmpegProgress { [PSCustomObject]@{ Frame = 1 } }
-        Mock Register-ScreenRecorderExitHandler {}
+        Mock Write-RecordingInfoFile { 'info.json' }
     }
 
     Context 'What to record' {
@@ -101,6 +105,24 @@ Describe 'Start-ScreenRecording' {
 
         It 'Throws for a region smaller than 2 pixels' {
             { Start-ScreenRecording -Rectangle 0,0,1,100 -Path $outputFolder } | Should -Throw '*at least 2 pixels*'
+        }
+
+        It 'Records the area dragged out with -SelectRegion' {
+            Mock Select-ScreenRegion { New-RegionTarget -X 10 -Y 20 -Width 300 -Height 200 -Monitors @($primary) }
+            $recording = Start-ScreenRecording -SelectRegion -Path $outputFolder
+            $recording.Target.Kind | Should -Be 'Region'
+            $recording.Target.Width | Should -Be 300
+        }
+
+        It 'Records nothing, without an error, when the selection is cancelled' {
+            Mock Select-ScreenRegion {}
+            Start-ScreenRecording -SelectRegion -Path $outputFolder | Should -BeNullOrEmpty
+            Should -Invoke Start-FFmpegProcess -Times 0 -Exactly
+        }
+
+        It 'Still records when the info file for other sessions can''t be saved' {
+            Mock Write-RecordingInfoFile { throw 'read-only cache' }
+            (Start-ScreenRecording -Synthetic -Path $outputFolder).InfoPath | Should -BeNullOrEmpty
         }
 
         It 'Matches a window anywhere in its title when no wildcard is given' -Skip:(!$IsWindows) {
@@ -229,7 +251,8 @@ Describe 'Start-ScreenRecording' {
             $first.Id | Should -Be 1
             $second.Id | Should -Be 2
             $script:psScreenRecorderRecordings.Count | Should -Be 2
-            Should -Invoke Register-ScreenRecorderExitHandler -Times 2
+            Should -Invoke Write-RecordingInfoFile -Times 2
+            $first.InfoPath | Should -Be 'info.json'
         }
 
         It 'Throws with ffmpeg''s error when the recording can''t start' {

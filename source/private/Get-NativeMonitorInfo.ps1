@@ -19,6 +19,7 @@ function Get-NativeMonitorInfo
     #>
 
     [CmdletBinding()]
+    [OutputType('PsScreenRecorder.MonitorInfo[]')]
     PARAM()
     process{
         Initialize-ScreenRecorderNative

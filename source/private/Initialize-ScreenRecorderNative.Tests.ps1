@@ -2,6 +2,11 @@
 param()
 
 #The native helper and its thin wrappers, on a real Windows desktop. Elsewhere, only the refusal is tested
+BeforeDiscovery {
+    #The overlay needs a real desktop. CI runners may not have one, so there it runs only when asked for
+    $interactiveDesktop = $IsWindows -and ([Environment]::GetEnvironmentVariable('PSSCREENRECORDER_TEST_CAPTURE') -eq '1' -or [Environment]::GetEnvironmentVariable('CI') -ne 'true')
+}
+
 BeforeAll {
     $sourcePath = $PSScriptRoot
     while($sourcePath -and (Split-Path -Path $sourcePath -Leaf) -ne 'source'){ $sourcePath = Split-Path -Path $sourcePath -Parent }
@@ -13,6 +18,7 @@ BeforeAll {
         'Get-NativeMonitorInfo.ps1'
         'Get-NativeWindowInfo.ps1'
         'Get-ForegroundWindowHandle.ps1'
+        'Invoke-NativeRegionSelection.ps1'
     )
     foreach($dependency in $dependencies)
     {
@@ -56,6 +62,33 @@ Describe 'Initialize-ScreenRecorderNative' {
         It 'Lists windows without failing, and reports the focused window as a number' {
             { Get-NativeWindowInfo } | Should -Not -Throw
             Get-ForegroundWindowHandle | Should -BeOfType [long]
+        }
+
+        It 'Returns the area dragged out on the region overlay, ignoring a click without a drag' -Skip:(!$interactiveDesktop) {
+            $helper = Get-Content -Raw -LiteralPath (Join-Path -Path (Split-Path -Path $sourcePath -Parent) -ChildPath 'tests/helpers/Send-RegionSelectorInput.ps1')
+            $driver = [powershell]::Create().AddScript($helper).AddParameter('Gesture', 'Drag').AddParameter('From', @(100,50)).AddParameter('To', @(500,350))
+            try{
+                $async = $driver.BeginInvoke()
+                $selection = Invoke-NativeRegionSelection
+                $driver.EndInvoke($async) | Should -Be 'posted'
+            }finally{
+                $driver.Dispose()
+            }
+            $origin = @([PsScreenRecorder.Native]::GetMonitors() | ForEach-Object { $_.Left }) | Measure-Object -Minimum
+            $top = @([PsScreenRecorder.Native]::GetMonitors() | ForEach-Object { $_.Top }) | Measure-Object -Minimum
+            $selection | Should -Be @(($origin.Minimum + 100), ($top.Minimum + 50), 400, 300)
+        }
+
+        It 'Returns nothing when the region overlay is cancelled with a right-click' -Skip:(!$interactiveDesktop) {
+            $helper = Get-Content -Raw -LiteralPath (Join-Path -Path (Split-Path -Path $sourcePath -Parent) -ChildPath 'tests/helpers/Send-RegionSelectorInput.ps1')
+            $driver = [powershell]::Create().AddScript($helper).AddParameter('Gesture', 'Cancel')
+            try{
+                $async = $driver.BeginInvoke()
+                Invoke-NativeRegionSelection | Should -BeNullOrEmpty
+                $null = $driver.EndInvoke($async)
+            }finally{
+                $driver.Dispose()
+            }
         }
 
         It 'Puts the thread''s DPI awareness back afterwards' {

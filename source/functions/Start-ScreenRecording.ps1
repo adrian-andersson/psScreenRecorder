@@ -14,7 +14,8 @@ function Start-ScreenRecording
               -Window <name>      a window whose title or process name matches (Windows only)
               -CurrentTerminal    the terminal window this command is typed into (Windows only)
               -Rectangle x,y,w,h  an area of the screen, in physical pixels
-              a capture target    piped from Get-CaptureTarget
+              -SelectRegion       drag out an area on screen first (Windows, or Linux with slop)
+              a capture target    piped from Get-CaptureTarget or Select-ScreenRegion
 
             When to start and stop:
               -Delay              wait this long before starting
@@ -96,6 +97,9 @@ function Start-ScreenRecording
         [Parameter(Mandatory,ParameterSetName='Rectangle')]
         [ValidateCount(4,4)]
         [int[]]$Rectangle,
+        #Drag out the area to record on screen first, with Select-ScreenRegion (Windows, or Linux with slop)
+        [Parameter(Mandatory,ParameterSetName='SelectRegion')]
+        [switch]$SelectRegion,
         #What to record, from Get-CaptureTarget
         [Parameter(Mandatory,ParameterSetName='Target',ValueFromPipeline)]
         [PSTypeName('psScreenRecorder.CaptureTarget')]
@@ -243,37 +247,20 @@ function Start-ScreenRecording
             }
             'CurrentTerminal' { Get-CaptureTarget -CurrentTerminal }
             'Rectangle' {
-                $regionX, $regionY, $regionWidth, $regionHeight = $Rectangle
-                #Most encoders need even dimensions, so round down rather than fail
-                $regionWidth = $regionWidth - ($regionWidth % 2)
-                $regionHeight = $regionHeight - ($regionHeight % 2)
-                if($regionWidth -lt 2 -or $regionHeight -lt 2)
-                {
-                    throw 'The rectangle must be at least 2 pixels wide and high'
-                }
-                #The monitor it fits inside, if any. macOS doesn't report screen sizes, so it's taken to be on the main screen
-                $containing = $(if($IsMacOS){
-                    $monitors | Where-Object { $_.IsPrimary } | Select-Object -First 1
-                }else{
-                    $monitors | Where-Object {
-                        $null -ne $_.Width -and $regionX -ge $_.X -and $regionY -ge $_.Y -and ($regionX + $regionWidth) -le ($_.X + $_.Width) -and ($regionY + $regionHeight) -le ($_.Y + $_.Height)
-                    } | Select-Object -First 1
-                })
-                $regionSplat = @{
-                    Kind = 'Region'
-                    Name = "$($regionWidth)x$($regionHeight) at $regionX,$regionY"
-                    X = $regionX
-                    Y = $regionY
-                    Width = $regionWidth
-                    Height = $regionHeight
-                    Monitor = $containing
-                }
-                New-CaptureTarget @regionSplat
+                New-RegionTarget -X $Rectangle[0] -Y $Rectangle[1] -Width $Rectangle[2] -Height $Rectangle[3] -Monitors $monitors
+            }
+            'SelectRegion' {
+                Select-ScreenRegion
             }
             'Target' { $Target }
             'Synthetic' {
                 New-CaptureTarget -Kind Synthetic -Name 'Test pattern' -X 0 -Y 0 -Width $syntheticSize.Width -Height $syntheticSize.Height
             }
+        }
+        if(!$captureTarget)
+        {
+            #Select-ScreenRegion was cancelled, and has said so
+            return
         }
         if($captureTarget.IsMinimized)
         {
@@ -393,6 +380,7 @@ function Start-ScreenRecording
             PSTypeName = 'psScreenRecorder.Recording'
             Id = $script:psScreenRecorderNextId
             State = 'Recording'
+            Session = 'This'
             TargetName = $captureTarget.Name
             Elapsed = $null
             Frames = $null
@@ -403,6 +391,7 @@ function Start-ScreenRecording
             Path = $finalPath
             RecordingPath = $recordingPath
             ProgressPath = $progressPath
+            InfoPath = $null
             Target = $captureTarget
             Backend = $chosenBackend
             Encoder = $encoderChoice.Encoder
@@ -420,7 +409,12 @@ function Start-ScreenRecording
         $recording | Add-Member -MemberType MemberSet -Name PSStandardMembers -Value ([System.Management.Automation.PSMemberInfo[]]@($displayProperties))
         $script:psScreenRecorderNextId++
         $script:psScreenRecorderRecordings.Add($recording)
-        Register-ScreenRecorderExitHandler -Recordings $script:psScreenRecorderRecordings
+        #So another session can find, stop or repair this recording if this one ends without stopping it
+        try{
+            $recording.InfoPath = Write-RecordingInfoFile -Recording $recording
+        }catch{
+            write-verbose "Unable to save the recording's info file, so other sessions won't see it: $($_.Exception.Message)"
+        }
 
         #Catch the common failures, such as a capture source that can't open, now rather than at Stop
         $startupDeadline = [datetime]::Now + $startupWait

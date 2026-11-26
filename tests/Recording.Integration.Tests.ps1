@@ -120,10 +120,34 @@ Describe 'Recording with a real ffmpeg' -Skip:(!$ffmpegAvailable) {
             }
             $recording.Handle.Process.Kill($true)
             $null = $recording.Handle.Process.WaitForExit(30000)
-            $null = Stop-ScreenRecording -Id $recording.Id -ErrorAction SilentlyContinue
-            $recording.State | Should -Be 'Failed'
-            $recording.RecordingPath | Should -Exist
-            (Get-VideoMetadata -Path $recording.RecordingPath -CountFrames).FrameCount | Should -BeGreaterThan 10
+            $file = Stop-ScreenRecording -Id $recording.Id -WarningAction SilentlyContinue
+            #What was recorded is saved, with its index rebuilt, rather than lost
+            $recording.State | Should -Be 'Saved'
+            $recording.RecordingPath | Should -Not -Exist
+            (Get-VideoMetadata -Path $file.FullName -CountFrames).FrameCount | Should -BeGreaterThan 10
+        }
+
+        It 'Repairs a recording left behind by a killed ffmpeg into a normal file' {
+            $recording = Start-ScreenRecording -Synthetic -Path (Join-Path -Path $outputFolder -ChildPath 'to repair.mp4')
+            $deadline = [datetime]::Now.AddSeconds(20)
+            while((Get-ScreenRecording -Id $recording.Id).Frames -lt 60 -and [datetime]::Now -lt $deadline)
+            {
+                Start-Sleep -Milliseconds 250
+            }
+            $recording.Handle.Process.Kill($true)
+            $null = $recording.Handle.Process.WaitForExit(30000)
+
+            $repaired = Repair-ScreenRecording -Path $recording.RecordingPath
+            $repaired.Name | Should -Be 'to repair.mp4'
+            $repaired.Duration.TotalSeconds | Should -BeGreaterThan 1
+            (Get-VideoMetadata -Path $repaired.FullName).Container | Should -BeLike '*mp4*'
+            $recording.RecordingPath | Should -Not -Exist
+        }
+
+        It 'Records a script block running with Invoke-ScreenRecording, keeping its output on screen' {
+            $file = Invoke-ScreenRecording -Synthetic -Path (Join-Path -Path $outputFolder -ChildPath 'invoked.mp4') -LeadIn 0.2 -LeadOut 0.3 -ScriptBlock { Start-Sleep -Milliseconds 800; 'shown on screen' } 6>$null
+            $file.Name | Should -Be 'invoked.mp4'
+            $file.Duration.TotalSeconds | Should -BeGreaterThan 1
         }
 
         It 'Does not leave ffmpeg recording when the PowerShell session ends without stopping it' {
@@ -157,6 +181,52 @@ Describe 'Recording with a real ffmpeg' -Skip:(!$ffmpegAvailable) {
             #What was recorded is still there, and readable
             $abandoned = Join-Path -Path $outputFolder -ChildPath 'abandoned.recording.mkv'
             (Get-VideoMetadata -Path $abandoned -CountFrames).FrameCount | Should -BeGreaterThan 10
+
+            #This session can see what the other left behind, and finish it into the file it was going to be
+            $leftBehind = Get-ScreenRecording -AllSessions -State Abandoned | Where-Object Path -eq $childRecording
+            $leftBehind.Session | Should -Be 'Other'
+            $saved = $leftBehind | Stop-ScreenRecording
+            $saved.FullName | Should -Be $childRecording
+            $saved.Duration.TotalSeconds | Should -BeGreaterThan 1
+            $abandoned | Should -Not -Exist
+            Get-ScreenRecording -AllSessions | Where-Object Path -eq $childRecording | Should -BeNullOrEmpty
+        }
+
+        It 'Stops and saves a recording still running in another session' {
+            $sourceFiles = foreach($folder in 'enums','classes','validationClasses','private','functions')
+            {
+                $folderPath = Join-Path -Path $sourcePath -ChildPath $folder
+                if(Test-Path -LiteralPath $folderPath)
+                {
+                    Get-ChildItem -LiteralPath $folderPath -Recurse -Filter '*.ps1' -File | Where-Object { $_.Name -notlike '*.Tests.ps1' } | ForEach-Object { $_.FullName }
+                }
+            }
+            $readyFile = Join-Path -Path $TestDrive -ChildPath 'other.ready'
+            $otherRecording = Join-Path -Path $outputFolder -ChildPath 'other session.mp4'
+            $childScript = Join-Path -Path $TestDrive -ChildPath 'keep-recording.ps1'
+            #The other session records, says so, then waits, as a session someone has left recording would
+            Set-Content -LiteralPath $childScript -Value @(
+                foreach($file in $sourceFiles){ ". '$($file.Replace("'","''"))'" }
+                "`$null = Start-ScreenRecording -Synthetic -Path '$($otherRecording.Replace("'","''"))'"
+                "Set-Content -LiteralPath '$($readyFile.Replace("'","''"))' -Value ready"
+                'Start-Sleep -Seconds 60'
+            )
+            $otherSplat = @{ FilePath = (Get-Process -Id $PID).Path; ArgumentList = '-NoProfile','-NonInteractive','-File',$childScript; PassThru = $true }
+            if($IsWindows){ $otherSplat.WindowStyle = 'Hidden' }
+            $otherSession = Start-Process @otherSplat
+            try{
+                $deadline = [datetime]::Now.AddSeconds(30)
+                while(!(Test-Path -LiteralPath $readyFile) -and [datetime]::Now -lt $deadline){ Start-Sleep -Milliseconds 250 }
+                Start-Sleep -Seconds 2
+
+                $running = Get-ScreenRecording -AllSessions -State Recording | Where-Object Path -eq $otherRecording
+                $running.Session | Should -Be 'Other'
+                $saved = $running | Stop-ScreenRecording
+                $saved.FullName | Should -Be $otherRecording
+                (Get-VideoMetadata -Path $saved.FullName -CountFrames).FrameCount | Should -BeGreaterThan 10
+            }finally{
+                if(!$otherSession.HasExited){ $otherSession.Kill($true) }
+            }
         }
 
         It 'Pipes straight into ConvertTo-Gif' {
