@@ -5,7 +5,7 @@ function Get-ForegroundWindowHandle
             Get the handle of the window that has focus
 
         .DESCRIPTION
-            A thin wrapper around [PsScreenRecorder.Native]::GetForegroundWindow(), so the focus modes of
+            A thin wrapper around the native helper's GetForegroundWindow(), so the focus modes of
             Start-ScreenRecording can be tested by mocking this function.
 
         .NOTES
@@ -22,7 +22,7 @@ function Get-ForegroundWindowHandle
     [OutputType([long])]
     PARAM()
     process{
-        Initialize-ScreenRecorderNative
-        [PsScreenRecorder.Native]::GetForegroundWindow()
+        $native = Initialize-ScreenRecorderNative
+        $native::GetForegroundWindow()
     }
 }

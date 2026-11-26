@@ -5,7 +5,7 @@ function Get-NativeMonitorInfo
             List Windows monitors in physical pixels, using the native helper
 
         .DESCRIPTION
-            A thin wrapper around [PsScreenRecorder.Native]::GetMonitors(), so the rest of the module can be
+            A thin wrapper around the native helper's GetMonitors(), so the rest of the module can be
             tested by mocking this function instead of a Windows API.
 
         .NOTES
@@ -19,10 +19,10 @@ function Get-NativeMonitorInfo
     #>
 
     [CmdletBinding()]
-    [OutputType('PsScreenRecorder.MonitorInfo[]')]
+    [OutputType([object[]])]
     PARAM()
     process{
-        Initialize-ScreenRecorderNative
-        [PsScreenRecorder.Native]::GetMonitors()
+        $native = Initialize-ScreenRecorderNative
+        $native::GetMonitors()
     }
 }

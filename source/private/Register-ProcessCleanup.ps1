@@ -46,8 +46,8 @@ function Register-ProcessCleanup
         if($IsWindows)
         {
             try{
-                Initialize-ScreenRecorderNative
-                $assigned = [PsScreenRecorder.Native]::KillWithThisProcess($Process.Handle)
+                $native = Initialize-ScreenRecorderNative
+                $assigned = $native::KillWithThisProcess($Process.Handle)
                 write-verbose "Added process $($Process.Id) to the cleanup job: $assigned"
                 return $assigned
             }catch{

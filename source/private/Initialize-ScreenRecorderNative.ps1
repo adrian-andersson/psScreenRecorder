@@ -2,11 +2,16 @@ function Initialize-ScreenRecorderNative
 {
     <#
         .SYNOPSIS
-            Load the Windows API helper psScreenRecorder uses to find monitors, windows and the cursor
+            Load the Windows API helper psScreenRecorder uses to find monitors, windows and the cursor, and return it
 
         .DESCRIPTION
-            Compiles a small C# class, PsScreenRecorder.Native, the first time it's needed in a session.
-            Windows only.
+            Compiles a small C# class the first time it's needed in a session, and returns its type. Call its
+            methods through what this returns, not by a fixed type name. Windows only.
+
+            The class's namespace includes a hash of its source, such as PsScreenRecorder.H1a2b3c4d5e.Native.
+            .NET can't unload a compiled type, so if an older version of the module compiled its helper earlier
+            in the same session, a fixed name would find that old helper, missing anything added since. With
+            the hash, a changed helper compiles under a new name alongside the old one.
 
             The problem it solves: pwsh is not DPI aware, so on a scaled display Windows hands it
             made-up "logical" coordinates. Version 1 tried to scale those back with one factor for the
@@ -39,14 +44,15 @@ function Initialize-ScreenRecorderNative
             capture by monitor index or window title through ffmpeg, without this helper.
 
         .EXAMPLE
-            Initialize-ScreenRecorderNative
-            [PsScreenRecorder.Native]::GetMonitors()
+            $native = Initialize-ScreenRecorderNative
+            $native::GetMonitors()
 
             #### DESCRIPTION
             List the monitors, in physical pixels.
     #>
 
     [CmdletBinding()]
+    [OutputType([type])]
     PARAM()
     begin{
         write-verbose "===========Executing $($MyInvocation.InvocationName)==========="
@@ -56,12 +62,10 @@ function Initialize-ScreenRecorderNative
         {
             throw 'The native helper is only available on Windows'
         }
-        if('PsScreenRecorder.Native' -as [type])
+        if($script:psScreenRecorderNative)
         {
-            write-verbose 'Native helper already loaded'
-            return
+            return $script:psScreenRecorderNative
         }
-        write-verbose 'Compiling the native helper'
         $source = @'
 using System;
 using System.Collections.Generic;
@@ -623,6 +627,25 @@ namespace PsScreenRecorder
     }
 }
 '@
-        Add-Type -TypeDefinition $source -Language CSharp -ErrorAction Stop
+        #Name the namespace after the source, so a changed helper never collides with an older one already loaded
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try{
+            $hash = [Convert]::ToHexString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($source)), 0, 5).ToLowerInvariant()
+        }finally{
+            $sha.Dispose()
+        }
+        $namespace = "PsScreenRecorder.H$hash"
+        $typeName = "$namespace.Native"
+        [type]$native = $typeName -as [type]
+        if($native)
+        {
+            write-verbose "Native helper $typeName is already loaded"
+        }else{
+            write-verbose "Compiling the native helper as $typeName"
+            Add-Type -TypeDefinition $source.Replace('namespace PsScreenRecorder', "namespace $namespace") -Language CSharp -ErrorAction Stop
+            $native = $typeName -as [type]
+        }
+        $script:psScreenRecorderNative = $native
+        [type]$native
     }
 }
