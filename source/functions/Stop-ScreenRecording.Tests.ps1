@@ -14,6 +14,8 @@ BeforeAll {
         'Complete-ScreenRecording.ps1'
         'Update-ScreenRecordingState.ps1'
         'Read-FFmpegProgress.ps1'
+        'Get-OtherSessionRecording.ps1'
+        'Stop-OtherSessionRecording.ps1'
     )
     foreach($dependency in $dependencies)
     {
@@ -132,5 +134,39 @@ Describe 'Get-ScreenRecording' {
         $null = New-TestRecording -Id 3 -State 'Failed'
         (Get-ScreenRecording -Id 3).State | Should -Be 'Failed'
         @(Get-ScreenRecording -State Recording,Saved).Id | Should -Be @(1,2)
+    }
+}
+
+Describe 'Recordings from other sessions, through Get- and Stop-ScreenRecording' {
+    BeforeEach {
+        $script:psScreenRecorderRecordings = [System.Collections.Generic.List[object]]::new()
+        $null = New-TestRecording -Id 1
+        $other = [PSCustomObject]@{ PSTypeName = 'psScreenRecorder.Recording'; Id = $null; State = 'Abandoned'; Session = 'Other'; Path = 'other.mp4' }
+        Mock Get-OtherSessionRecording { $other }
+        Mock Update-ScreenRecordingState { $Recording }
+        Mock Stop-OtherSessionRecording { [System.IO.FileInfo]::new('other.mp4') }
+        Mock Stop-FFmpegProcess { [PSCustomObject]@{ ExitCode = 0; StandardError = ''; Killed = $false } }
+    }
+
+    It 'Lists only this session''s recordings unless -AllSessions' {
+        @(Get-ScreenRecording).Count | Should -Be 1
+        Should -Invoke Get-OtherSessionRecording -Times 0 -Exactly
+        @(Get-ScreenRecording -AllSessions).Count | Should -Be 2
+    }
+
+    It 'Filters other sessions'' recordings by state too' {
+        (Get-ScreenRecording -AllSessions -State Abandoned).Session | Should -Be 'Other'
+    }
+
+    It 'Hands another session''s recording to Stop-OtherSessionRecording' {
+        ($other | Stop-ScreenRecording).Name | Should -Be 'other.mp4'
+        Should -Invoke Stop-OtherSessionRecording -Times 1 -Exactly
+        Should -Invoke Stop-FFmpegProcess -Times 0 -Exactly
+    }
+
+    It 'Leaves other sessions alone when stopping everything in this one' {
+        Mock Complete-ScreenRecording {}
+        $null = Stop-ScreenRecording
+        Should -Invoke Stop-OtherSessionRecording -Times 0 -Exactly
     }
 }

@@ -7,14 +7,16 @@ function Complete-ScreenRecording
         .DESCRIPTION
             Recordings are made into a Matroska (.mkv) file next to the final one, as Matroska stays readable
             even if ffmpeg is killed part way through. Once ffmpeg has stopped, this:
-              - checks ffmpeg exited cleanly, or was stopped, and that something was recorded
-              - for an .mkv destination, renames the recording into place
+              - checks something was recorded. If nothing was, the recording fails with ffmpeg's error
+              - if ffmpeg ended unexpectedly part way through, warns, and saves what was recorded anyway
+              - for a cleanly finished .mkv destination, renames the recording into place
               - otherwise, copies the video into the final container without re-encoding (a remux, which takes
-                moments), with the index at the start (+faststart) so it plays while still downloading. HEVC
-                is tagged hvc1, which Apple players need
-              - removes the recording file and the progress file
+                moments, see Convert-RecordingContainer). That also rebuilds the index of a recording that
+                didn't finish cleanly
+              - removes the recording, progress and info files
 
-            If the remux fails, the .mkv is kept, and its path is in the error.
+            If the remux fails, the .mkv is kept, its path is in the error, and Repair-ScreenRecording can try
+            again.
 
             Returns the final file, with Duration, Width, Height, FrameRate and VideoCodec added from ffprobe.
 
@@ -54,47 +56,38 @@ function Complete-ScreenRecording
             Remove-Item -LiteralPath $Recording.ProgressPath -Force -ErrorAction Ignore
         }
 
-        if($ExitInfo.ExitCode -ne 0 -and !$ExitInfo.Killed)
+        if($Recording.PSObject.Properties['InfoPath'] -and $Recording.InfoPath)
         {
-            $Recording.State = 'Failed'
-            $Recording.Error = "ffmpeg exited with code $($ExitInfo.ExitCode): $errorText"
-            if($hasVideo)
-            {
-                $Recording.Error = "$($Recording.Error). What was recorded is in: $($Recording.RecordingPath)"
-            }else{
-                Remove-Item -LiteralPath $Recording.RecordingPath -Force -ErrorAction Ignore
-            }
-            Write-Error -Message "The recording failed. $($Recording.Error)"
-            return
+            Remove-Item -LiteralPath $Recording.InfoPath -Force -ErrorAction Ignore
         }
+
         if(!$hasVideo)
         {
             $Recording.State = 'Failed'
-            $Recording.Error = "Nothing was recorded. $errorText".Trim()
+            $Recording.Error = $(if($ExitInfo.ExitCode -ne 0 -and !$ExitInfo.Killed){"ffmpeg exited with code $($ExitInfo.ExitCode): $errorText"}else{"Nothing was recorded. $errorText".Trim()})
             Remove-Item -LiteralPath $Recording.RecordingPath -Force -ErrorAction Ignore
             Write-Error -Message "The recording failed. $($Recording.Error)"
             return
         }
+        #Anything other than a clean finish leaves the Matroska file without its index, which a remux rebuilds
+        $cleanFinish = $ExitInfo.ExitCode -eq 0 -and !$ExitInfo.Killed
+        if(!$cleanFinish -and !$ExitInfo.Killed)
+        {
+            Write-Warning "ffmpeg ended unexpectedly (exit code $($ExitInfo.ExitCode)), so the recording may stop short. Saving what was recorded. ffmpeg said: $errorText"
+        }
 
         $extension = [System.IO.Path]::GetExtension($Recording.Path).ToLowerInvariant()
-        if($extension -eq '.mkv')
+        if($extension -eq '.mkv' -and $cleanFinish)
         {
             write-verbose 'Destination is Matroska, renaming the recording into place'
             Move-Item -LiteralPath $Recording.RecordingPath -Destination $Recording.Path -Force -ErrorAction Stop
         }else{
             write-verbose "Remuxing into $extension"
-            $remuxArguments = [System.Collections.Generic.List[string]]::new()
-            $remuxArguments.AddRange([string[]]@('-hide_banner','-loglevel','error','-y','-i',$Recording.RecordingPath,'-map','0','-c','copy','-movflags','+faststart'))
-            if($Recording.Codec -eq 'HEVC')
-            {
-                $remuxArguments.AddRange([string[]]@('-tag:v','hvc1'))
-            }
-            $remuxArguments.Add($Recording.Path)
             try{
-                $null = Invoke-FFmpeg -ArgumentList $remuxArguments -ErrorAction Stop
+                Convert-RecordingContainer -Path $Recording.RecordingPath -Destination $Recording.Path -Codec $Recording.Codec
             }catch{
                 $Recording.State = 'Failed'
-                $Recording.Error = "Unable to save as $($extension): $($_.Exception.Message). The recording is kept in: $($Recording.RecordingPath)"
+                $Recording.Error = "Unable to save as $($extension): $($_.Exception.Message). The recording is kept in: $($Recording.RecordingPath). Repair-ScreenRecording can try again"
                 Write-Error -Message $Recording.Error
                 return
             }
@@ -102,16 +95,10 @@ function Complete-ScreenRecording
         }
 
         $Recording.State = 'Saved'
-        $file = Get-Item -LiteralPath $Recording.Path
-        try{
-            $metadata = Get-VideoMetadata -Path $file.FullName -ErrorAction Stop
-            foreach($property in 'Duration','Width','Height','FrameRate','VideoCodec')
-            {
-                $file | Add-Member -NotePropertyName $property -NotePropertyValue $metadata.$property -Force
-            }
-            $Recording.Elapsed = $metadata.Duration
-        }catch{
-            write-verbose "Unable to read the saved recording's details: $($_.Exception.Message)"
+        $file = Get-Item -LiteralPath $Recording.Path | Add-VideoMetadataMember
+        if($file.PSObject.Properties['Duration'] -and $file.Duration)
+        {
+            $Recording.Elapsed = $file.Duration
         }
         $file
     }
