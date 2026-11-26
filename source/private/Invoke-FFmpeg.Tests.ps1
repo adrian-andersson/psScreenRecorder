@@ -95,6 +95,13 @@ Describe 'Invoke-FFmpeg' {
             { Invoke-FFmpeg -ExecutablePath $fakeTool -ArgumentList $baseArguments } | Should -Throw '*exited with code 3*the real error*'
         }
 
+        It 'Returns the result instead of throwing with -IgnoreExitCode' {
+            $env:PSSR_FAKE_EXIT = '1'
+            $result = Invoke-FFmpeg -ExecutablePath $fakeTool -ArgumentList $baseArguments -IgnoreExitCode
+            $result.ExitCode | Should -Be 1
+            $result.StandardError | Should -Contain 'the real error'
+        }
+
         It 'Still throws its own error when native command errors are turned on' {
             $env:PSSR_FAKE_EXIT = '2'
             $PSNativeCommandUseErrorActionPreference = $true
