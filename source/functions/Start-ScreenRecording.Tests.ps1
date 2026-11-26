@@ -51,8 +51,9 @@ Describe 'Start-ScreenRecording' {
     BeforeEach {
         $script:psScreenRecorderRecordings = [System.Collections.Generic.List[object]]::new()
         $script:psScreenRecorderNextId = 1
-        $primary = New-CaptureTarget -Kind Monitor -Index 0 -Name 'Primary' -X 0 -Y 0 -Width 1920 -Height 1080 -IsPrimary $true -Handle 1001
-        $secondary = New-CaptureTarget -Kind Monitor -Index 1 -Name 'Second' -X 1920 -Y 0 -Width 1280 -Height 1024 -Handle 1002
+        #Each has what every platform's capture source needs: a Windows handle, an X11 display and an AVFoundation device
+        $primary = New-CaptureTarget -Kind Monitor -Index 0 -Name 'Primary' -X 0 -Y 0 -Width 1920 -Height 1080 -IsPrimary $true -Handle 1001 -Display ':0' -DeviceIndex 1
+        $secondary = New-CaptureTarget -Kind Monitor -Index 1 -Name 'Second' -X 1920 -Y 0 -Width 1280 -Height 1024 -Handle 1002 -Display ':0' -DeviceIndex 2
         Mock Get-CaptureTarget -ParameterFilter { $PSCmdlet.ParameterSetName -eq 'Monitor' } { $secondary; $primary }
         Mock Find-FFmpeg {
             [PSCustomObject]@{ FFmpegPath = 'ffmpeg'; CaptureSources = @('gfxcapture','ddagrab','gdigrab','avfoundation','x11grab'); Encoders = @('libx264','libx264rgb','libx265','h264_nvenc') }
@@ -90,7 +91,8 @@ Describe 'Start-ScreenRecording' {
             $recording.Target.Kind | Should -Be 'Region'
             $recording.Target.Width | Should -Be 800
             $recording.Target.Height | Should -Be 450
-            $recording.Target.Monitor.Name | Should -Be 'Second'
+            #macOS doesn't report screen sizes, so regions there are taken to be on the main screen
+            $recording.Target.Monitor.Name | Should -Be $(if($IsMacOS){'Primary'}else{'Second'})
         }
 
         It 'Records a region spanning monitors with gdigrab' -Skip:(!$IsWindows) {
@@ -101,7 +103,7 @@ Describe 'Start-ScreenRecording' {
             { Start-ScreenRecording -Rectangle 0,0,1,100 -Path $outputFolder } | Should -Throw '*at least 2 pixels*'
         }
 
-        It 'Matches a window anywhere in its title when no wildcard is given' {
+        It 'Matches a window anywhere in its title when no wildcard is given' -Skip:(!$IsWindows) {
             Mock Get-CaptureTarget -ParameterFilter { $Window } { New-CaptureTarget -Kind Window -Name 'Notes - Notepad' -Title 'Notes - Notepad' -X 0 -Y 0 -Width 640 -Height 480 -Handle 77 }
             $null = Start-ScreenRecording -Window 'Notepad' -Path $outputFolder
             Should -Invoke Get-CaptureTarget -ParameterFilter { $Window -and $Name -eq '*Notepad*' }
@@ -118,6 +120,11 @@ Describe 'Start-ScreenRecording' {
         It 'Throws when no window matches' {
             Mock Get-CaptureTarget -ParameterFilter { $Window } {}
             { Start-ScreenRecording -Window 'nothing' -Path $outputFolder } | Should -Throw '*No window matches*'
+        }
+
+        It 'Throws for a window outside Windows, where window capture isn''t supported yet' -Skip:$IsWindows {
+            $window = New-CaptureTarget -Kind Window -Name 'Notes' -X 0 -Y 0 -Width 640 -Height 480
+            { $window | Start-ScreenRecording -Path $outputFolder } | Should -Throw '*only supported on Windows*'
         }
 
         It 'Throws for a minimized window' {
@@ -138,6 +145,8 @@ Describe 'Start-ScreenRecording' {
             $recording.RecordingPath | Should -Be (Join-Path -Path $outputFolder -ChildPath 'demo.recording.mkv')
             $recording.Arguments[-1] | Should -Be $recording.RecordingPath
             $recording.Arguments[-2] | Should -Be 'matroska'
+            #Clusters close every second, and packets are flushed, so a killed recording loses about a second
+            ($recording.Arguments -join ' ') | Should -BeLike '*-cluster_time_limit 1000 -flush_packets 1 -f matroska*'
             ($recording.Arguments -join ' ') | Should -BeLike "*-progress file:$($recording.ProgressPath) -stats_period 0.5*"
         }
 
@@ -173,7 +182,7 @@ Describe 'Start-ScreenRecording' {
 
         It 'Uses -VideoEncoder by name, with no settings' {
             $recording = Start-ScreenRecording -Synthetic -Path $outputFolder -VideoEncoder 'libvvenc'
-            ($recording.Arguments -join ' ') | Should -BeLike '*-c:v libvvenc -f matroska*'
+            ($recording.Arguments -join ' ') | Should -BeLike '*-c:v libvvenc -cluster_time_limit*'
         }
 
         It 'Leaves the cursor out with -HideCursor' -Skip:(!$IsWindows) {

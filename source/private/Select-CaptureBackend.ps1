@@ -73,6 +73,10 @@ function Select-CaptureBackend
         {
             throw 'The synthetic source can only record a synthetic target'
         }
+        if($kind -eq 'Window' -and $Platform -ne 'Windows')
+        {
+            throw "Recording a single window is only supported on Windows for now. On $Platform, record a monitor, or a region with -Rectangle"
+        }
         #A region that spans monitors has no single monitor to hand gfxcapture or ddagrab
         $fitsOneMonitor = $kind -ne 'Region' -or $null -ne $Target.Monitor
 

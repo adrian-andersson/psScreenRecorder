@@ -72,6 +72,13 @@ Describe 'Select-CaptureBackend' {
             Select-CaptureBackend -Target $monitor -AvailableSources 'x11grab','kmsgrab' -Platform Linux | Should -Be 'x11grab'
         }
 
+        It 'Throws for a window on <Platform>, where window capture is not supported yet' -ForEach @(
+            @{ Platform = 'macOS' }
+            @{ Platform = 'Linux' }
+        ) {
+            { Select-CaptureBackend -Target $window -AvailableSources 'avfoundation','x11grab' -Platform $Platform } | Should -Throw '*only supported on Windows*'
+        }
+
         It 'Throws on Linux without x11grab' {
             { Select-CaptureBackend -Target $monitor -AvailableSources 'kmsgrab' -Platform Linux } | Should -Throw '*x11grab*'
         }

@@ -352,7 +352,11 @@ function Start-ScreenRecording
         {
             $ffmpegArguments.AddRange($FFmpegOutputArgument)
         }
-        $ffmpegArguments.AddRange([string[]]@('-f','matroska',$recordingPath))
+        #If ffmpeg is killed, only what has reached the disk survives. Matroska holds each cluster in memory until
+        #it's complete (5 seconds by default), and file output is buffered on top of that, so a short recording
+        #could be lost entirely. Closing clusters every second, and flushing every packet, keeps the loss to
+        #about a second. Measured: killed 1.5 seconds in, 0 frames survived without these, 31 with them
+        $ffmpegArguments.AddRange([string[]]@('-cluster_time_limit','1000','-flush_packets','1','-f','matroska',$recordingPath))
 
         if(!$PSCmdlet.ShouldProcess($finalPath, "Record $($captureTarget.Kind.ToLower()) '$($captureTarget.Name)' with $chosenBackend and $($encoderChoice.Encoder)"))
         {
