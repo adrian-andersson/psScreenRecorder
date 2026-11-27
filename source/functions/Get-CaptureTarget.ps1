@@ -54,6 +54,7 @@ function Get-CaptureTarget
         [switch]$Window,
         #Only windows whose title or process name matches. Wildcards are allowed
         [Parameter(ParameterSetName='Window',Position=0)]
+        [ArgumentCompleter({ Get-CaptureTargetCompletion -Kind Window -WordToComplete $args[2] })]
         [SupportsWildcards()]
         [string]$Name,
         #The terminal window this command is running in (Windows only)

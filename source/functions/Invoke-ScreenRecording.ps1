@@ -44,6 +44,7 @@ function Invoke-ScreenRecording
         #Record a monitor, by its Index from Get-CaptureTarget, instead of the terminal
         [Parameter(Mandatory,ParameterSetName='Monitor')]
         [ValidateRange(0,64)]
+        [ArgumentCompleter({ Get-CaptureTargetCompletion -Kind Monitor -WordToComplete $args[2] })]
         [int]$Monitor,
         #Record an area, as X,Y,Width,Height in physical pixels, instead of the terminal
         [Parameter(Mandatory,ParameterSetName='Rectangle')]
