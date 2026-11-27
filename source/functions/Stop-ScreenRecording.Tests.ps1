@@ -99,6 +99,15 @@ Describe 'Stop-ScreenRecording' {
         $problems[0].ToString() | Should -BeLike '*capture device lost*'
     }
 
+    It 'Marks a recording whose ffmpeg never started as Failed, instead of falling over' {
+        $recording = New-TestRecording -Id 1
+        $recording.Handle = $null
+        $recording | Stop-ScreenRecording -ErrorVariable problems -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+        $recording.State | Should -Be 'Failed'
+        $problems[0].ToString() | Should -BeLike '*never started*'
+        Should -Invoke Stop-FFmpegProcess -Times 0 -Exactly
+    }
+
     It 'Passes -Timeout to the stop' {
         $recording = New-TestRecording -Id 1
         $null = $recording | Stop-ScreenRecording -Timeout 45
@@ -183,6 +192,57 @@ Describe 'Recordings from other sessions, through Get- and Stop-ScreenRecording'
         $script:psScreenRecorderRecordings = [System.Collections.Generic.List[object]]::new()
         Mock Write-Warning {}
         $null = Stop-ScreenRecording
-        Should -Invoke Write-Warning -ParameterFilter { $Message -like '*other sessions have 1: abandoned other.mp4*-AllSessions*' }
+        Should -Invoke Write-Warning -ParameterFilter { $Message -like "*other sessions have 1:*abandoned  'other.mp4'*-All*" }
+    }
+}
+
+Describe 'Choosing a recording by -Path, and the -All alias' {
+    BeforeEach {
+        $script:psScreenRecorderRecordings = [System.Collections.Generic.List[object]]::new()
+        $mine = New-TestRecording -Id 1 -Path 'C:\Videos\Screen Recording 2026-11-27 10-00-00.mp4'
+        $other = [PSCustomObject]@{ PSTypeName = 'psScreenRecorder.Recording'; Id = $null; State = 'Recording'; Session = 'Other'; Path = 'C:\Videos\Screen Recording 2026-11-27 11-02-09.mp4' }
+        $abandoned = [PSCustomObject]@{ PSTypeName = 'psScreenRecorder.Recording'; Id = $null; State = 'Abandoned'; Session = 'Other'; Path = 'C:\Videos\Screen Recording 2026-11-27 11-15-42.mp4' }
+        Mock Get-OtherSessionRecording { $other; $abandoned }
+        Mock Update-ScreenRecordingState { $Recording }
+        Mock Stop-OtherSessionRecording { [System.IO.FileInfo]::new($Recording.Path) }
+        Mock Stop-FFmpegProcess { [PSCustomObject]@{ ExitCode = 0; StandardError = ''; Killed = $false } }
+        Mock Complete-ScreenRecording { [System.IO.FileInfo]::new($Recording.Path) }
+    }
+
+    It 'Stops another session''s recording picked by a wildcard on its file name' {
+        (Stop-ScreenRecording -Path '*11-02-09*').Name | Should -Be 'Screen Recording 2026-11-27 11-02-09.mp4'
+        Should -Invoke Stop-OtherSessionRecording -Times 1 -Exactly -ParameterFilter { $Recording.Path -like '*11-02-09*' }
+    }
+
+    It 'Stops this session''s recording by -Path too' {
+        (Stop-ScreenRecording -Path '*10-00-00*').Name | Should -Be 'Screen Recording 2026-11-27 10-00-00.mp4'
+        Should -Invoke Stop-FFmpegProcess -Times 1 -Exactly
+    }
+
+    It 'Matches the full path as well as the name' {
+        (Stop-ScreenRecording -Path 'C:\Videos\Screen Recording 2026-11-27 11-15-42.mp4').Name | Should -Be 'Screen Recording 2026-11-27 11-15-42.mp4'
+    }
+
+    It 'Writes an error, listing them, and stops nothing, when several recordings match' {
+        Stop-ScreenRecording -Path '*27 11-*' -ErrorVariable problems -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+        $problems[0].ToString() | Should -BeLike "*2 recordings match*11-02-09.mp4*11-15-42.mp4*"
+        Should -Invoke Stop-OtherSessionRecording -Times 0 -Exactly
+    }
+
+    It 'Writes an error when nothing matches' {
+        Stop-ScreenRecording -Path '*nothing*' -ErrorVariable problems -ErrorAction SilentlyContinue
+        $problems[0].ToString() | Should -BeLike '*No recording to stop matches*'
+    }
+
+    It 'Accepts -All for -AllSessions, on Stop- and Get-ScreenRecording' {
+        @(Stop-ScreenRecording -All).Count | Should -Be 3
+        @(Get-ScreenRecording -All).Count | Should -Be 3
+    }
+
+    It 'Lists other sessions'' recordings, ready to paste into -Path, when this one has none' {
+        $script:psScreenRecorderRecordings = [System.Collections.Generic.List[object]]::new()
+        Mock Write-Warning {}
+        $null = Stop-ScreenRecording
+        Should -Invoke Write-Warning -ParameterFilter { $Message -like "*recording  'Screen Recording 2026-11-27 11-02-09.mp4'*-Path '<name>'*-All*" }
     }
 }
