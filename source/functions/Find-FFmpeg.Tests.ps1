@@ -167,6 +167,27 @@ Describe 'Find-FFmpeg' {
             (Find-FFmpeg).FFmpegPath | Should -Be $loneFFmpeg
         }
 
+        It 'Looks again, instead of using the cached ffmpeg, once it has been moved or removed' {
+            $movable = Join-Path -Path $TestDrive -ChildPath 'movable'
+            $null = New-Item -ItemType Directory -Path $movable -Force
+            $movableFFmpeg = Join-Path -Path $movable -ChildPath "ffmpeg$extension"
+            $null = New-Item -ItemType File -Path $movableFFmpeg -Force
+            $null = Find-FFmpeg -Path $movable
+            Remove-Item -LiteralPath $movableFFmpeg
+            $env:PSSCREENRECORDER_FFMPEG = $installFolder
+            (Find-FFmpeg).FFmpegPath | Should -Be $fakeFFmpeg
+        }
+
+        It 'Throws the install advice when the cached ffmpeg has gone and there is no other' {
+            $movable = Join-Path -Path $TestDrive -ChildPath 'gone'
+            $null = New-Item -ItemType Directory -Path $movable -Force
+            $goneFFmpeg = Join-Path -Path $movable -ChildPath "ffmpeg$extension"
+            $null = New-Item -ItemType File -Path $goneFFmpeg -Force
+            $null = Find-FFmpeg -Path $movable
+            Remove-Item -LiteralPath $goneFFmpeg
+            { Find-FFmpeg } | Should -Throw '*does not install ffmpeg*'
+        }
+
         It 'Looks again with -Refresh' {
             $env:PSSCREENRECORDER_FFMPEG = $installFolder
             $null = Find-FFmpeg

@@ -82,6 +82,14 @@ function Find-FFmpeg
         )
     }
     process{
+        #The cached ffmpeg is only reused while it's still there. If it has been moved, removed or uninstalled
+        #since, look again, rather than hand out a path that no longer works
+        $cachedIsGone = $script:psScreenRecorderFFmpeg -and !(Test-Path -LiteralPath $script:psScreenRecorderFFmpeg.FFmpegPath -PathType Leaf)
+        if($cachedIsGone)
+        {
+            write-verbose "The cached ffmpeg is no longer at $($script:psScreenRecorderFFmpeg.FFmpegPath), looking again"
+            $script:psScreenRecorderFFmpeg = $null
+        }
         if(!$Path -and !$Refresh -and $script:psScreenRecorderFFmpeg)
         {
             write-verbose "Using the cached ffmpeg: $($script:psScreenRecorderFFmpeg.FFmpegPath)"
