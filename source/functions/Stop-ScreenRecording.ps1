@@ -9,9 +9,10 @@ function Stop-ScreenRecording
             writing, then saves the recording to its final file and returns that file.
 
             With no parameters, stops every recording this session is still running, which is usually the one.
-            Give -Recording, or -Id, to stop a particular one. -AllSessions also stops or finishes recordings
-            other PowerShell sessions are running or left behind. If there's nothing to stop here but other
-            sessions have recordings, the warning says so.
+            Give -Recording, or -Id, to stop a particular one. -Path stops one by the file it's saving to, in
+            any session, which is how to pick one another session started. -AllSessions (or -All) also stops
+            or finishes recordings other PowerShell sessions are running or left behind. If there's nothing to
+            stop here but other sessions have recordings, the warning lists them.
 
             A recording that has already ended by itself, because its -Duration ran out, is saved.
 
@@ -44,6 +45,12 @@ function Stop-ScreenRecording
             Stop recording number 2 only.
 
         .EXAMPLE
+            Stop-ScreenRecording -Path '*11-02-09*'
+
+            #### DESCRIPTION
+            Stop and save the recording going to a file with 11-02-09 in its name, whichever session started it.
+
+        .EXAMPLE
             Stop-ScreenRecording -AllSessions
 
             #### DESCRIPTION
@@ -57,11 +64,16 @@ function Stop-ScreenRecording
         [Parameter(Mandatory,ParameterSetName='Recording',ValueFromPipeline,Position=0)]
         [PSTypeName('psScreenRecorder.Recording')]
         [PSCustomObject[]]$Recording,
-        #The Id of the recording to stop
+        #The Id of the recording to stop. Only recordings from this session have one
         [Parameter(Mandatory,ParameterSetName='Id')]
         [int[]]$Id,
+        #The recording to stop, by the file it's saving to, in any session. Wildcards are allowed, such as '*11-02-09*'
+        [Parameter(Mandatory,ParameterSetName='Path')]
+        [SupportsWildcards()]
+        [string]$Path,
         #Also stop, or finish, recordings other PowerShell sessions started or left behind
         [Parameter(ParameterSetName='All')]
+        [Alias('All')]
         [switch]$AllSessions,
         #How long to give ffmpeg to finish writing before it's ended: seconds, mm:ss or hh:mm:ss
         [Parameter()]
@@ -88,6 +100,19 @@ function Stop-ScreenRecording
                     $found
                 }
             }
+            'Path' {
+                #Match the full path or just the file name, so '*11-02-09*' and 'Screen Recording*.mp4' both work
+                $candidates = @($known | Where-Object { $_.State -in 'Recording','Ended' }) + @(Get-OtherSessionRecording | Where-Object { $_.State -in 'Recording','Abandoned' })
+                $matched = @($candidates | Where-Object { $_.Path -like $Path -or [System.IO.Path]::GetFileName($_.Path) -like $Path })
+                if($matched.Count -eq 0)
+                {
+                    Write-Error "No recording to stop matches '$Path'. Get-ScreenRecording -AllSessions lists them"
+                }elseif($matched.Count -gt 1){
+                    Write-Error "$($matched.Count) recordings match '$Path': $(($matched | ForEach-Object { "'$([System.IO.Path]::GetFileName($_.Path))'" }) -join ', '). Be more specific, or use -AllSessions to stop them all"
+                }else{
+                    $matched[0]
+                }
+            }
             'All' {
                 $running = @($known | Where-Object { $_.State -in 'Recording','Ended' })
                 $others = @(Get-OtherSessionRecording | Where-Object { $_.State -in 'Recording','Abandoned' })
@@ -99,7 +124,8 @@ function Stop-ScreenRecording
                 {
                     if($others)
                     {
-                        Write-Warning "There are no recordings to stop in this session, but other sessions have $($others.Count): $(($others | ForEach-Object { "$($_.State.ToLower()) $([System.IO.Path]::GetFileName($_.Path))" }) -join ', '). Use Stop-ScreenRecording -AllSessions to stop and save them"
+                        $list = ($others | ForEach-Object { "  $($_.State.ToLower().PadRight(10)) '$([System.IO.Path]::GetFileName($_.Path))'" }) -join [Environment]::NewLine
+                        Write-Warning "There are no recordings to stop in this session, but other sessions have $($others.Count):$([Environment]::NewLine)$list$([Environment]::NewLine)Stop one with Stop-ScreenRecording -Path '<name>', or all of them with Stop-ScreenRecording -All"
                     }else{
                         Write-Warning 'There are no recordings to stop'
                     }
@@ -128,6 +154,14 @@ function Stop-ScreenRecording
             }
             if(!$PSCmdlet.ShouldProcess($item.Path, "Stop recording $($item.Id) and save it"))
             {
+                continue
+            }
+            if(!$item.Handle -or !$item.Handle.Process)
+            {
+                #Recordings whose ffmpeg never started, from versions before that was caught at the start
+                $item.State = 'Failed'
+                $item.Error = 'ffmpeg never started for this recording, so there is nothing to save'
+                Write-Error "Recording $($item.Id) can't be saved: $($item.Error)"
                 continue
             }
             $exitInfo = Stop-FFmpegProcess -Handle $item.Handle -Timeout $Timeout -Confirm:$false

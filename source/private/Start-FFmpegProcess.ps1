@@ -63,7 +63,23 @@ function Start-FFmpegProcess
 
         if($PSCmdlet.ShouldProcess($FFmpegPath, 'Start ffmpeg'))
         {
-            $process = [System.Diagnostics.Process]::Start($startInfo)
+            #A .NET exception from a method call would only end this statement, letting the caller carry on as if
+            #ffmpeg were running. Turn it into one terminating error that says what went wrong
+            try{
+                $process = [System.Diagnostics.Process]::Start($startInfo)
+            }catch{
+                $reason = $(if($_.Exception.InnerException){$_.Exception.InnerException.Message}else{$_.Exception.Message}).TrimEnd('.')
+                $PSCmdlet.ThrowTerminatingError([System.Management.Automation.ErrorRecord]::new(
+                    [System.InvalidOperationException]::new("Unable to start ffmpeg ($FFmpegPath): $reason. If ffmpeg has moved, Find-FFmpeg -Refresh looks for it again", $_.Exception),
+                    'FFmpegStartFailed',
+                    [System.Management.Automation.ErrorCategory]::ObjectNotFound,
+                    $FFmpegPath
+                ))
+            }
+            if(!$process)
+            {
+                throw "ffmpeg ($FFmpegPath) did not start"
+            }
             $null = Register-ProcessCleanup -Process $process
             [PSCustomObject]@{
                 PSTypeName = 'psScreenRecorder.FFmpegProcess'

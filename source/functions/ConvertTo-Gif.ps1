@@ -15,6 +15,9 @@ function ConvertTo-Gif
             frame delays, so playback timing doesn't change. One frame is still kept every half second
             through a pause, so a pause at the very end of the video isn't cut short.
 
+            -Speed plays the GIF faster or slower than the video: 0.5 is half speed. -HoldLastFrame keeps the
+            last frame on screen for a while before the GIF loops, so the end of a demo can be read.
+
             The source can be anything ffmpeg reads, not just MP4.
 
             Returns the GIF as a file object.
@@ -36,6 +39,12 @@ function ConvertTo-Gif
 
             #### DESCRIPTION
             Make a 640 pixel wide GIF from 2 seconds to 1 minute 30, dropping frames where nothing changes.
+
+        .EXAMPLE
+            Invoke-ScreenRecording -ScriptBlock { Get-Process | Select-Object -First 5 } | ConvertTo-Gif -Speed 0.6 -HoldLastFrame 3
+
+            #### DESCRIPTION
+            Record a quick demo, then make a GIF that plays it a little slower and holds the result for three seconds.
 
         .EXAMPLE
             Get-ChildItem .\recordings\*.mkv | ConvertTo-Gif -Force
@@ -75,6 +84,14 @@ function ConvertTo-Gif
         #Drop frames that look the same as the one before, keeping the timing
         [Parameter()]
         [switch]$RemoveDuplicateFrames,
+        #Playback speed: 0.5 plays at half speed, 2 at double. 1 keeps the video's own speed
+        [Parameter()]
+        [ValidateRange(0.1,10)]
+        [double]$Speed = 1,
+        #How long to keep the last frame on screen before the GIF loops: seconds (3), mm:ss or hh:mm:ss
+        [Parameter()]
+        [ToTimeSpan()]
+        [timespan]$HoldLastFrame,
         #Most colours in the palette. Fewer colours make a smaller file
         [Parameter()]
         [ValidateRange(2,256)]
@@ -107,6 +124,10 @@ function ConvertTo-Gif
         if($PSBoundParameters.ContainsKey('Start') -and $Start -lt [timespan]::Zero)
         {
             throw 'Start cannot be negative'
+        }
+        if($PSBoundParameters.ContainsKey('HoldLastFrame') -and $HoldLastFrame -lt [timespan]::Zero)
+        {
+            throw 'HoldLastFrame cannot be negative'
         }
         if($PSBoundParameters.ContainsKey('End') -and $End -le [timespan]::Zero)
         {
@@ -155,12 +176,23 @@ function ConvertTo-Gif
         }
 
         $filters = [System.Collections.Generic.List[string]]::new()
+        if($Speed -ne 1)
+        {
+            #Change the speed first, so -Fps is the frame rate of the GIF as it plays
+            $filters.Add("setpts=PTS/$($Speed.ToString($culture))")
+        }
         $filters.Add("fps=$Fps")
         if($RemoveDuplicateFrames)
         {
             #A GIF's last frame has no next frame to set its delay, so a pause at the very end would be lost.
             #Keeping one frame in every half second of a pause bounds that to half a second, and still drops most frames
             $filters.Add("mpdecimate=max=$([math]::Max(1,[int][math]::Floor($Fps / 2)))")
+        }
+        $holdSeconds = $(if($PSBoundParameters.ContainsKey('HoldLastFrame')){$HoldLastFrame.TotalSeconds}else{0})
+        if($holdSeconds -gt 0)
+        {
+            #After removing duplicates, so the held frame isn't thinned out again
+            $filters.Add("tpad=stop_mode=clone:stop_duration=$($holdSeconds.ToString($culture))")
         }
         if($Width -gt 0)
         {
@@ -219,7 +251,8 @@ function ConvertTo-Gif
             }
             if($expectedDuration -and $expectedDuration -gt [timespan]::Zero)
             {
-                $invokeSplat.ExpectedDuration = $expectedDuration
+                #Progress follows the GIF's own clock, which speed and the held last frame change
+                $invokeSplat.ExpectedDuration = [timespan]::FromSeconds(($expectedDuration.TotalSeconds / $Speed) + $holdSeconds)
             }
 
             try{

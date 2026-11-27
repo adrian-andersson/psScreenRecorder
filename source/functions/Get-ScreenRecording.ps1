@@ -57,6 +57,7 @@ function Get-ScreenRecording
         [string[]]$State,
         #Include recordings from other PowerShell sessions, running or left behind
         [Parameter()]
+        [Alias('All')]
         [switch]$AllSessions
     )
     begin{

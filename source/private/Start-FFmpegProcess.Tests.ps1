@@ -80,6 +80,20 @@ Describe 'Start-FFmpegProcess and Stop-FFmpegProcess' {
         $exit.StandardError | Should -BeLike '*Could not open capture device*'
     }
 
+    It 'Throws one clear, terminating error when ffmpeg is not there' {
+        $missing = Join-Path -Path $TestDrive -ChildPath 'no ffmpeg here.exe'
+        { Start-FFmpegProcess -FFmpegPath $missing -ArgumentList '-version' } | Should -Throw '*Unable to start ffmpeg*Find-FFmpeg -Refresh*'
+        #A terminating error, so a caller carries no further without -ErrorAction
+        $reached = $false
+        try{
+            $null = Start-FFmpegProcess -FFmpegPath $missing -ArgumentList '-version'
+            $reached = $true
+        }catch{
+            $_.FullyQualifiedErrorId | Should -BeLike 'FFmpegStartFailed*'
+        }
+        $reached | Should -BeFalse
+    }
+
     It 'Does not start anything with -WhatIf' {
         Start-FFmpegProcess -FFmpegPath $fakeTool -ArgumentList '-NoProfile' -WhatIf | Should -BeNullOrEmpty
     }

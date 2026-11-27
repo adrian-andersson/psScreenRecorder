@@ -261,6 +261,12 @@ Describe 'Start-ScreenRecording' {
             { Start-ScreenRecording -Synthetic -Path $outputFolder } | Should -Throw '*could not start*Failed to capture window*'
         }
 
+        It 'Stops, and keeps no recording, when ffmpeg can''t be started at all' {
+            Mock Start-FFmpegProcess { throw 'Unable to start ffmpeg (C:\gone\ffmpeg.exe): The system cannot find the file specified' }
+            { Start-ScreenRecording -Synthetic -Path $outputFolder } | Should -Throw '*Unable to start ffmpeg*'
+            $script:psScreenRecorderRecordings.Count | Should -Be 0
+        }
+
         It 'Does not start ffmpeg with -WhatIf' {
             $null = Start-ScreenRecording -Synthetic -Path $outputFolder -WhatIf
             Should -Invoke Start-FFmpegProcess -Times 0 -Exactly

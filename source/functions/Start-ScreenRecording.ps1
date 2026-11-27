@@ -85,9 +85,11 @@ function Start-ScreenRecording
         #Monitor to record, by its Index from Get-CaptureTarget. The default is the primary monitor
         [Parameter(ParameterSetName='Monitor',Position=0)]
         [ValidateRange(0,64)]
+        [ArgumentCompleter({ Get-CaptureTargetCompletion -Kind Monitor -WordToComplete $args[2] })]
         [int]$Monitor,
         #Window to record: its title or process name. Wildcards are allowed; without any, it matches anywhere in the title
         [Parameter(Mandatory,ParameterSetName='Window')]
+        [ArgumentCompleter({ Get-CaptureTargetCompletion -Kind Window -WordToComplete $args[2] })]
         [SupportsWildcards()]
         [string]$Window,
         #Record the terminal window this command is typed into
@@ -371,7 +373,11 @@ function Start-ScreenRecording
             Write-Progress -Activity 'Recording starts in' -Completed
         }
 
-        $handle = Start-FFmpegProcess -FFmpegPath $installation.FFmpegPath -ArgumentList $ffmpegArguments -Confirm:$false
+        $handle = Start-FFmpegProcess -FFmpegPath $installation.FFmpegPath -ArgumentList $ffmpegArguments -Confirm:$false -ErrorAction Stop
+        if(!$handle -or !$handle.Process)
+        {
+            throw "ffmpeg did not start, so nothing is being recorded"
+        }
         if(!$script:psScreenRecorderNextId)
         {
             $script:psScreenRecorderNextId = 1

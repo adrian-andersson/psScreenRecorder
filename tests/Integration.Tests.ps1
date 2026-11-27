@@ -149,6 +149,25 @@ Describe 'Integration with a real ffmpeg' -Skip:(!$ffmpegAvailable) {
             $deduplicatedMetadata.Duration.TotalSeconds | Should -BeGreaterOrEqual ($fullMetadata.Duration.TotalSeconds - 0.6)
         }
 
+        It 'Plays at <Speed>x, holding the last frame <Hold> seconds, for <Expected> seconds in all' -ForEach @(
+            @{ Speed = 0.5; Hold = 0; Expected = 8 }
+            @{ Speed = 2; Hold = 0; Expected = 2 }
+            @{ Speed = 1; Hold = 3; Expected = 7 }
+            @{ Speed = 0.5; Hold = 2; Expected = 10 }
+        ) {
+            #pausedClip is 4 seconds
+            $splat = @{ Speed = $Speed }
+            if($Hold){ $splat.HoldLastFrame = $Hold }
+            $gif = ConvertTo-Gif -Path $pausedClip -Destination (Join-Path -Path $clipFolder -ChildPath "speed $Speed hold $Hold.gif") @splat
+            (Get-VideoMetadata -Path $gif.FullName).Duration.TotalSeconds | Should -BeGreaterOrEqual ($Expected - 0.2)
+            (Get-VideoMetadata -Path $gif.FullName).Duration.TotalSeconds | Should -BeLessOrEqual ($Expected + 0.2)
+        }
+
+        It 'Keeps the whole hold when duplicates are removed too' {
+            $gif = ConvertTo-Gif -Path $pausedClip -Destination (Join-Path -Path $clipFolder -ChildPath 'dedup hold.gif') -RemoveDuplicateFrames -HoldLastFrame 3
+            (Get-VideoMetadata -Path $gif.FullName).Duration.TotalSeconds | Should -BeGreaterOrEqual 6.4
+        }
+
         It 'Works with every dither' -ForEach @(
             @{ Dither = 'Sierra2_4a' }
             @{ Dither = 'Sierra2' }

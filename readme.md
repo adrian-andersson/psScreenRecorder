@@ -80,6 +80,8 @@ Start-ScreenRecording -Rectangle 100,100,1280,720  # an area: x, y, width, heigh
 Start-ScreenRecording -SelectRegion                # drag out the area on screen first
 ```
 
+`-Window` and `-Monitor` tab-complete: press Tab after `-Window` to cycle through the open windows' titles.
+
 `-SelectRegion` dims every monitor and lets you drag out the area; it shows through clear with its size. Right-click or Esc cancels. It's built into Windows; on Linux it uses [slop](https://github.com/naelstrof/slop) if installed. `Select-ScreenRegion` on its own returns the area, so you can choose once and record it several times.
 
 Choose when it starts and stops:
@@ -106,10 +108,10 @@ Recording uses your GPU's encoder when it has one (NVIDIA, Intel, AMD, Apple or 
 ```powershell
 Invoke-ScreenRecording -ClearHost -ScriptBlock {
     Get-Process | Sort-Object CPU -Descending | Select-Object -First 5
-} | ConvertTo-Gif -Destination .\docs\demo.gif -RemoveDuplicateFrames
+} | ConvertTo-Gif -Destination .\docs\demo.gif -RemoveDuplicateFrames -Speed 0.75 -HoldLastFrame 3
 ```
 
-It records half a second before the script block runs and a second and a half after (`-LeadIn`, `-LeadOut`), so the GIF opens cleanly and the result stays on screen long enough to read.
+It records half a second before the script block runs and a second and a half after (`-LeadIn`, `-LeadOut`), so the GIF opens cleanly. Commands print faster than anyone reads, so `-Speed 0.75` slows the GIF down a little, and `-HoldLastFrame 3` keeps the result on screen for three seconds before it loops.
 
 ### If a recording is left behind
 
@@ -119,10 +121,13 @@ What's left behind plays, but without its index, so players may show no duration
 
 ```powershell
 # Recordings other sessions left behind, or are still running
-Get-ScreenRecording -AllSessions
+Get-ScreenRecording -All
 
-# Finish them (and stop any still running) into the files they were going to be
-Get-ScreenRecording -AllSessions -State Abandoned | Stop-ScreenRecording
+# Stop or finish one of them, by its file name
+Stop-ScreenRecording -Path '*11-02-09*'
+
+# Or all of them, into the files they were going to be
+Stop-ScreenRecording -All
 
 # Or repair any left-behind file directly
 Repair-ScreenRecording -Path '.\Screen Recording 2026-11-27 14-05-09.recording.mkv'
@@ -144,7 +149,7 @@ Terminal and screen recordings are mostly pauses. `-RemoveDuplicateFrames` drops
 ConvertTo-Gif -Path .\demo.mp4 -Destination .\docs\demo.gif -Width 640 -Fps 15 -Start 2 -End 1:30 -RemoveDuplicateFrames
 ```
 
-`-Start` and `-End` take seconds (`5`, `2.5`), `mm:ss` (`1:30`) or `hh:mm:ss`. `-Dither`, `-MaxColors` and `-Loop` fine-tune the result. Folders work through the pipeline:
+`-Start` and `-End` take seconds (`5`, `2.5`), `mm:ss` (`1:30`) or `hh:mm:ss`. `-Speed` plays it faster or slower (`0.5` is half speed), and `-HoldLastFrame` holds the end before it loops. `-Dither`, `-MaxColors` and `-Loop` fine-tune the result. Folders work through the pipeline:
 
 ```powershell
 Get-ChildItem .\recordings\*.mkv | ConvertTo-Gif -Force
