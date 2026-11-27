@@ -143,6 +143,37 @@ Describe 'ConvertTo-Gif' {
             Should -Invoke Invoke-FFmpeg -ParameterFilter { ($ArgumentList -join ' ') -like "*$Expected*" }
         }
 
+        It 'Changes speed first, with a dot whatever the culture, so -Fps is the GIF''s own frame rate' {
+            $savedCulture = [cultureinfo]::CurrentCulture
+            try{
+                [cultureinfo]::CurrentCulture = [cultureinfo]::GetCultureInfo('de-DE')
+                $null = ConvertTo-Gif -Path $clip -Speed 0.5
+                Should -Invoke Invoke-FFmpeg -ParameterFilter { ($ArgumentList -join ' ') -like '*`[0:v`]setpts=PTS/0.5,fps=10,*' }
+            }finally{
+                [cultureinfo]::CurrentCulture = $savedCulture
+            }
+        }
+
+        It 'Leaves speed out at 1' {
+            $null = ConvertTo-Gif -Path $clip
+            Should -Invoke Invoke-FFmpeg -ParameterFilter { ($ArgumentList -join ' ') -notlike '*setpts*' }
+        }
+
+        It 'Holds the last frame after removing duplicates, so the hold isn''t thinned out' {
+            $null = ConvertTo-Gif -Path $clip -RemoveDuplicateFrames -HoldLastFrame 3
+            Should -Invoke Invoke-FFmpeg -ParameterFilter { ($ArgumentList -join ' ') -like '*mpdecimate=max=5,tpad=stop_mode=clone:stop_duration=3,*' }
+        }
+
+        It 'Shows progress against the length the GIF will be, after speed and hold' {
+            $null = ConvertTo-Gif -Path $clip -Speed 2 -HoldLastFrame 1
+            #The mocked source is 20 seconds: 10 at double speed, plus 1 held
+            Should -Invoke Invoke-FFmpeg -ParameterFilter { $ExpectedDuration -eq [timespan]::FromSeconds(11) }
+        }
+
+        It 'Throws for a negative -HoldLastFrame' {
+            { ConvertTo-Gif -Path $clip -HoldLastFrame -1 } | Should -Throw '*cannot be negative*'
+        }
+
         It 'Drops repeated frames, keeping timing, with -RemoveDuplicateFrames' {
             $null = ConvertTo-Gif -Path $clip -RemoveDuplicateFrames -Fps 10
             Should -Invoke Invoke-FFmpeg -ParameterFilter {
