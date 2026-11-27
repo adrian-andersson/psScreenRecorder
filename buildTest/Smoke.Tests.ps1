@@ -56,6 +56,17 @@ Describe 'Published module with a real ffmpeg' -Skip:(!$ffmpegAvailable) {
         (Get-VideoMetadata -Path $gif.FullName -CountFrames).FrameCount | Should -Be 10
     }
 
+    It 'Tab-completes -Monitor and -Window from inside the module, not with file names' -Skip:(!$IsWindows) {
+        #Completers run outside the module, where its private functions can't be seen. Only the published module shows that
+        $monitors = (TabExpansion2 -inputScript 'Start-ScreenRecording -Monitor ' -cursorColumn 31).CompletionMatches
+        $monitors.Count | Should -BeGreaterThan 0
+        $monitors.ResultType | Should -Not -Contain 'ProviderContainer'
+        $monitors[0].CompletionText | Should -Match '^\d+$'
+        $windows = (TabExpansion2 -inputScript 'Start-ScreenRecording -Window ' -cursorColumn 30).CompletionMatches
+        $windows.ResultType | Should -Not -Contain 'ProviderContainer'
+        $windows.ResultType | Should -Not -Contain 'ProviderItem'
+    }
+
     It 'Converts through the version 1 alias' {
         $gif = convert-mp4togif -mp4Path $clip -gifPath (Join-Path -Path $TestDrive -ChildPath 'alias.gif')
         $gif.FullName | Should -Exist
