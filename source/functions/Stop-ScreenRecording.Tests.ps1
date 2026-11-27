@@ -199,9 +199,11 @@ Describe 'Recordings from other sessions, through Get- and Stop-ScreenRecording'
 Describe 'Choosing a recording by -Path, and the -All alias' {
     BeforeEach {
         $script:psScreenRecorderRecordings = [System.Collections.Generic.List[object]]::new()
-        $mine = New-TestRecording -Id 1 -Path 'C:\Videos\Screen Recording 2026-11-27 10-00-00.mp4'
-        $other = [PSCustomObject]@{ PSTypeName = 'psScreenRecorder.Recording'; Id = $null; State = 'Recording'; Session = 'Other'; Path = 'C:\Videos\Screen Recording 2026-11-27 11-02-09.mp4' }
-        $abandoned = [PSCustomObject]@{ PSTypeName = 'psScreenRecorder.Recording'; Id = $null; State = 'Abandoned'; Session = 'Other'; Path = 'C:\Videos\Screen Recording 2026-11-27 11-15-42.mp4' }
+        #Built with Join-Path so the separator suits the platform: on macOS and Linux a backslash is part of a file name
+        $videos = Join-Path -Path $TestDrive -ChildPath 'Videos'
+        $mine = New-TestRecording -Id 1 -Path (Join-Path -Path $videos -ChildPath 'Screen Recording 2026-11-27 10-00-00.mp4')
+        $other = [PSCustomObject]@{ PSTypeName = 'psScreenRecorder.Recording'; Id = $null; State = 'Recording'; Session = 'Other'; Path = (Join-Path -Path $videos -ChildPath 'Screen Recording 2026-11-27 11-02-09.mp4') }
+        $abandoned = [PSCustomObject]@{ PSTypeName = 'psScreenRecorder.Recording'; Id = $null; State = 'Abandoned'; Session = 'Other'; Path = (Join-Path -Path $videos -ChildPath 'Screen Recording 2026-11-27 11-15-42.mp4') }
         Mock Get-OtherSessionRecording { $other; $abandoned }
         Mock Update-ScreenRecordingState { $Recording }
         Mock Stop-OtherSessionRecording { [System.IO.FileInfo]::new($Recording.Path) }
@@ -220,7 +222,7 @@ Describe 'Choosing a recording by -Path, and the -All alias' {
     }
 
     It 'Matches the full path as well as the name' {
-        (Stop-ScreenRecording -Path 'C:\Videos\Screen Recording 2026-11-27 11-15-42.mp4').Name | Should -Be 'Screen Recording 2026-11-27 11-15-42.mp4'
+        (Stop-ScreenRecording -Path (Join-Path -Path $videos -ChildPath 'Screen Recording 2026-11-27 11-15-42.mp4')).Name | Should -Be 'Screen Recording 2026-11-27 11-15-42.mp4'
     }
 
     It 'Writes an error, listing them, and stops nothing, when several recordings match' {
