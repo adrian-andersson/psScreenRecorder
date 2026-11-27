@@ -44,7 +44,11 @@ function Invoke-ScreenRecording
         #Record a monitor, by its Index from Get-CaptureTarget, instead of the terminal
         [Parameter(Mandatory,ParameterSetName='Monitor')]
         [ValidateRange(0,64)]
-        [ArgumentCompleter({ Get-CaptureTargetCompletion -Kind Monitor -WordToComplete $args[2] })]
+        [ArgumentCompleter({
+            #Completers run outside the module, so run the private helper inside it. Dot-sourced, as in tests, there is no module
+            $module = (Get-Command -Name $args[0] -ErrorAction Ignore).Module
+            if($module){ & $module { Get-CaptureTargetCompletion -Kind Monitor -WordToComplete $args[0] } $args[2] }else{ Get-CaptureTargetCompletion -Kind Monitor -WordToComplete $args[2] }
+        })]
         [int]$Monitor,
         #Record an area, as X,Y,Width,Height in physical pixels, instead of the terminal
         [Parameter(Mandatory,ParameterSetName='Rectangle')]
